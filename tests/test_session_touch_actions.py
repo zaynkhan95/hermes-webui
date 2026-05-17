@@ -84,6 +84,8 @@ def test_session_swipes_show_visual_feedback_and_touch_load_clears():
     assert "const _settleSessionSwipePaint=()=>{" in SESSIONS_JS
     assert "const _completeSessionSwipePaint=(signedDx)=>{" in SESSIONS_JS
     assert "el.classList.add('swipe-committed')" in SESSIONS_JS
+    assert "el.style.height=rect.height+'px'" in SESSIONS_JS
+    assert "requestAnimationFrame(()=>el.classList.add('swipe-removing'))" in SESSIONS_JS
     assert "el.style.setProperty('--session-swipe-progress','0')" in SESSIONS_JS
     assert "deleteSession(s.session_id,async()=>{" in SESSIONS_JS
     assert "const archived=await _archiveSession(s,!s.archived);" in SESSIONS_JS
@@ -110,6 +112,8 @@ def test_session_swipes_show_visual_feedback_and_touch_load_clears():
     assert ".session-item.active.swiping-left" in STYLE_CSS
     assert ".session-item.dragging{transition:background .15s,color .15s,box-shadow .15s ease;}" in STYLE_CSS
     assert ".session-item.swipe-committed" in STYLE_CSS
+    assert ".session-item.swipe-removing{" in STYLE_CSS
+    assert "height .36s cubic-bezier(.2,.8,.2,1)" in STYLE_CSS
     assert "transform .42s cubic-bezier(.2,.8,.2,1)" in STYLE_CSS
     assert ".session-item.swipe-committed .session-swipe-affordance{transition:opacity .18s ease,transform .18s ease;}" in STYLE_CSS
     assert ".session-item.long-pressing" in STYLE_CSS
@@ -117,6 +121,19 @@ def test_session_swipes_show_visual_feedback_and_touch_load_clears():
     assert "transform:translateX(var(--session-swipe-offset,0))" in STYLE_CSS
     assert "finally{" in SESSIONS_JS
     assert "el.classList.remove('loading');" in SESSIONS_JS
+
+
+def test_session_removal_reflows_surviving_rows_smoothly():
+    assert "let _pendingSessionReflowPositions = null;" in SESSIONS_JS
+    assert "function _captureSessionReflowPositions(){" in SESSIONS_JS
+    assert "positions.set(row.dataset.sid,row.getBoundingClientRect().top);" in SESSIONS_JS
+    assert "function _playQueuedSessionReflowAnimation(){" in SESSIONS_JS
+    assert "window.matchMedia('(prefers-reduced-motion: reduce)').matches" in SESSIONS_JS
+    assert "const delta=oldTop-row.getBoundingClientRect().top;" in SESSIONS_JS
+    assert "{duration:360,easing:'cubic-bezier(.2,.8,.2,1)'}" in SESSIONS_JS
+    assert SESSIONS_JS.count("const reflowPositions=_captureSessionReflowPositions();") >= 2
+    assert SESSIONS_JS.count("_pendingSessionReflowPositions=reflowPositions;") >= 2
+    assert "_playQueuedSessionReflowAnimation();" in SESSIONS_JS
 
 
 def test_ios_touch_events_drive_session_swipes():

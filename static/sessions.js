@@ -1303,6 +1303,38 @@ const _lineageReportCache = new Map();
 const _lineageReportInflight = new Map();
 let _lineageReportCacheGeneration = 0;
 let _sessionVisibleSidebarIds = [];
+let _pendingSessionReflowPositions = null;
+
+function _captureSessionReflowPositions(){
+  const list=$('sessionList');
+  if(!list) return null;
+  const positions=new Map();
+  list.querySelectorAll('.session-item[data-sid]').forEach(row=>{
+    positions.set(row.dataset.sid,row.getBoundingClientRect().top);
+  });
+  return positions;
+}
+
+function _playQueuedSessionReflowAnimation(){
+  const before=_pendingSessionReflowPositions;
+  _pendingSessionReflowPositions=null;
+  if(!before||!before.size) return;
+  const reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduce) return;
+  const list=$('sessionList');
+  if(!list) return;
+  list.querySelectorAll('.session-item[data-sid]').forEach(row=>{
+    const oldTop=before.get(row.dataset.sid);
+    if(oldTop===undefined) return;
+    const delta=oldTop-row.getBoundingClientRect().top;
+    if(Math.abs(delta)<1||typeof row.animate!=='function') return;
+    const anim=row.animate(
+      [{transform:`translateY(${delta}px)`},{transform:'translateY(0)'}],
+      {duration:360,easing:'cubic-bezier(.2,.8,.2,1)'}
+    );
+    if(anim&&anim.finished) anim.finished.catch(()=>{});
+  });
+}
 const SESSION_VIRTUAL_ROW_HEIGHT = 52;
 const SESSION_VIRTUAL_BUFFER_ROWS = 12;
 const SESSION_VIRTUAL_THRESHOLD_ROWS = 80;
@@ -1609,14 +1641,16 @@ function _playSessionActionMenuEntrance(menu){
 
 async function _archiveSession(session, archived=true){
   if(_isReadOnlySession(session)){ if(typeof showToast==='function') showToast('Read-only imported sessions cannot be modified.',3000); return false; }
+  const reflowPositions=_captureSessionReflowPositions();
   try{
     const response=await api('/api/session/archive',{method:'POST',body:JSON.stringify({session_id:session.session_id,archived})});
     session.archived=archived;
     if(S.session&&S.session.session_id===session.session_id) S.session.archived=archived;
+    _pendingSessionReflowPositions=reflowPositions;
     await renderSessionList();
     showToast(session.archived?_sessionArchiveToast(response,session):t('session_restored'));
     return true;
-  }catch(err){showToast(t('session_archive_failed')+err.message);return false;}
+  }catch(err){_pendingSessionReflowPositions=null;showToast(t('session_archive_failed')+err.message);return false;}
 }
 
 function _openSessionActionMenu(session, anchorEl){
@@ -2841,6 +2875,7 @@ function renderSessionListFromCache(){
     toggleBtn.onclick=(e)=>{e.stopPropagation();toggleSessionSelectMode();};
     list.appendChild(toggleBtn);
   }
+  _playQueuedSessionReflowAnimation();
   // Note: declared after the groups loop but available via function hoisting.
   function _renderOneSession(s, isPinnedGroup=false){
     const el=document.createElement('div');
@@ -3283,6 +3318,10 @@ function renderSessionListFromCache(){
       el.classList.add('swipe-committed');
       el.style.setProperty('--session-swipe-progress','0');
       el.style.setProperty('--session-swipe-offset',(signedDx>0?1:-1)*window.innerWidth+'px');
+      const rect=el.getBoundingClientRect();
+      el.style.height=rect.height+'px';
+      el.style.minHeight=rect.height+'px';
+      requestAnimationFrame(()=>el.classList.add('swipe-removing'));
     };
     const _handleSessionSwipe=(signedDx,signedDy)=>{
       if(_gestureState==='committed'||!_isSessionSwipeTarget()) return false;
@@ -3575,12 +3614,13 @@ async function deleteSession(sid, beforeDelete=null){
     danger:true
   });
   if(!ok)return false;
+  const reflowPositions=_captureSessionReflowPositions();
   if(beforeDelete) await beforeDelete();
   let response=null;
   try{
     response=await api('/api/session/delete',{method:'POST',body:JSON.stringify({session_id:sid})});
     _clearHandoffStorageForSession(sid);
-  }catch(e){setStatus(`Delete failed: ${e.message}`);return false;}
+  }catch(e){_pendingSessionReflowPositions=null;setStatus(`Delete failed: ${e.message}`);return false;}
   if(S.session&&S.session.session_id===sid){
     S.session=null;S.messages=[];S.entries=[];
     localStorage.removeItem('hermes-webui-session');
@@ -3599,6 +3639,7 @@ async function deleteSession(sid, beforeDelete=null){
     }
   }
   showToast(_sessionResponseRetainsWorktree(response,session)?t('session_deleted_worktree'):t('session_deleted'));
+  _pendingSessionReflowPositions=reflowPositions;
   await renderSessionList();
   return true;
 }

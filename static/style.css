@@ -492,6 +492,15 @@
   }
   .session-item.dragging{transition:background .15s,color .15s,box-shadow .15s ease;}
   .session-item.swipe-committed{transition:background .15s,color .15s,transform .42s cubic-bezier(.2,.8,.2,1),box-shadow .15s ease;}
+  .session-item.swipe-removing{
+    min-height:0!important;
+    height:0!important;
+    margin-bottom:0;
+    padding-top:0;
+    padding-bottom:0;
+    overflow:hidden;
+    transition:background .15s,color .15s,transform .42s cubic-bezier(.2,.8,.2,1),box-shadow .15s ease,height .36s cubic-bezier(.2,.8,.2,1),min-height .36s cubic-bezier(.2,.8,.2,1),margin-bottom .36s cubic-bezier(.2,.8,.2,1),padding-top .36s cubic-bezier(.2,.8,.2,1),padding-bottom .36s cubic-bezier(.2,.8,.2,1);
+  }
   .session-item.swipe-committed .session-swipe-affordance{transition:opacity .18s ease,transform .18s ease;}
   /* Suppress hover highlight during drag to avoid visual noise mid-scroll */
   .session-item.dragging:hover{background:transparent;color:var(--muted);}
