@@ -3,6 +3,9 @@
 
 ## [Unreleased]
 
+### Added
+
+- **PR #2744** by @Michaelyklam — #1925 RuntimeAdapter RFC follow-up: marks the `runner-local` selection seam shipped in v0.51.105 and defines the next Slice 4d supervised runner route gate before live chat can move onto a runner backend. The gate keeps runner routing default-off, preserves legacy fallback and public response shapes, and carries the Runtime API gap matrix forward so active-run discovery, session→run lookup, command metadata, artifacts, and provider/tool routing do not become private WebUI runtime replicas.
 
 ## [v0.51.107] — 2026-05-21 — Release CE (stage-400 — 8-PR batch — pinned-sessions-limit getter rename + uploaded-file user-turn dedupe + active-run repair guard + incremental KaTeX streaming + profile default model on fresh boot + French locale completion + update-check error surfacing + release-update apply path)
 
