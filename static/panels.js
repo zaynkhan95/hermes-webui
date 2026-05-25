@@ -6874,7 +6874,17 @@ async function _removeProviderKey(providerId){
       if(els.saveBtn){els.saveBtn.disabled=false;els.saveBtn.textContent=t('providers_save');}
     }
   }catch(e){
-    showToast('Error: '+e.message);
+    // A 403 from /api/providers/delete fires when the CSRF cookie/header
+    // pair has drifted (typically a tab opened before the most recent
+    // login or cookie rotation). The raw server string is
+    // "Cross-origin request rejected" which reads like a deployment-shape
+    // problem and gives the user no next step (#2572). Surface a clearer
+    // recovery hint instead so reloading the page is an obvious fix.
+    if(e&&e.status===403){
+      showToast('Session expired. Reload the page and try again.',6000,'error');
+    }else{
+      showToast('Error: '+e.message);
+    }
     if(els.saveBtn){els.saveBtn.disabled=false;els.saveBtn.textContent=t('providers_save');}
   }
 }

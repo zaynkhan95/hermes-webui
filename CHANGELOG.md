@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removing a provider key now surfaces "Session expired. Reload the page and try again." when the underlying POST is rejected with 403, instead of the raw "Cross-origin request rejected" string that gives the user no next step. (Refs #2572)
+
 ## [v0.51.137] — 2026-05-25 — Release DI (stage-batch19 — 6-PR medium-risk batch)
 
 ### Added
