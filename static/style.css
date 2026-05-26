@@ -331,7 +331,7 @@
   :root.dark[data-skin="nous"] .session-child-count:hover{background:rgba(99,179,237,.26);color:#7EB6E0;}
   :root.dark[data-skin="nous"] .session-tree-badge{background:rgba(99,179,237,.2);color:#4682B4;}
   :root.dark[data-skin="nous"] .session-tag{background:rgba(99,179,237,.2);color:#4682B4;}
-  /* Image lightbox close */
+  /* Image lightbox */
   :root[data-skin="nous"] .img-lightbox-close:hover{background:rgba(70,130,180,.4);}
   :root.dark[data-skin="nous"] .img-lightbox-close:hover{background:rgba(70,130,180,.4);}
   :root[data-skin="nous"] .img-lightbox-nav:hover{background:rgba(70,130,180,.5);}

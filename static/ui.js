@@ -537,13 +537,11 @@ function _openImgLightboxWithNav(src, alt, images, index) {
   cls.onclick = () => _closeImgLightbox(lb);
   lb.appendChild(img);
   lb.appendChild(cls);
-  // Prev/Next navigation — store index on lb so a single set of handlers
-  // reads the live value without closure churn on every nav.
-  const hasNav = images && images.length>1;
+  // Prev/Next navigation — store index and images on lb so a single set of
+  // handlers reads live values without closure churn on every nav.
   lb._navIndex = index;
-  lb._navImages = hasNav ? images : null;
-  let counter = null;
-  if(hasNav){
+  lb._navImages = (images && images.length>1) ? images : null;
+  if(lb._navImages){
     const prevBtn = document.createElement('button');
     prevBtn.className = 'img-lightbox-nav img-lightbox-nav-prev';
     prevBtn.setAttribute('aria-label', 'Previous image');
@@ -556,22 +554,22 @@ function _openImgLightboxWithNav(src, alt, images, index) {
     nextBtn.innerHTML = '›';
     nextBtn.onclick = e => { e.stopPropagation(); _navigateLightbox(lb, 1); };
     lb.appendChild(nextBtn);
-    counter = document.createElement('div');
-    counter.className = 'img-lightbox-counter';
-    lb.appendChild(counter);
-    _updateLightboxCounter(counter, index, images.length);
+    lb._counterEl = document.createElement('div');
+    lb._counterEl.className = 'img-lightbox-counter';
+    lb.appendChild(lb._counterEl);
+    lb._counterEl.textContent = (index+1) + ' / ' + images.length;
   }
   lb.onclick = () => _closeImgLightbox(lb);
   document.body.appendChild(lb);
-  // One keyboard handler, reads lb._navIndex live — no remove/add churn.
-  lb._escHandler = e => {
+  // Single keyboard handler — reads lb._navX live, no remove/add churn.
+  lb._keyHandler = e => {
     if(e.key==='Escape'){ _closeImgLightbox(lb); return; }
-    if(hasNav){
+    if(lb._navImages){
       if(e.key==='ArrowLeft'){ e.preventDefault(); _navigateLightbox(lb, -1); }
       if(e.key==='ArrowRight'){ e.preventDefault(); _navigateLightbox(lb, 1); }
     }
   };
-  document.addEventListener('keydown', lb._escHandler);
+  document.addEventListener('keydown', lb._keyHandler);
 }
 function _navigateLightbox(lb, direction) {
   const images = lb._navImages;
@@ -581,19 +579,16 @@ function _navigateLightbox(lb, direction) {
   lb._navIndex = newIndex;
   const nextImg = images[newIndex];
   const lbImg = lb.querySelector('img');
+  if(!lbImg) return;
   lbImg.src = nextImg.src;
   lbImg.alt = nextImg.alt || '';
   lb.setAttribute('aria-label', nextImg.alt || 'Image');
-  // Update counter
-  const counter = lb.querySelector('.img-lightbox-counter');
-  if(counter) _updateLightboxCounter(counter, newIndex, images.length);
-}
-function _updateLightboxCounter(el, index, total) {
-  el.textContent = (index+1) + ' / ' + total;
+  // Update counter via stored reference — no DOM query.
+  if(lb._counterEl) lb._counterEl.textContent = (newIndex+1) + ' / ' + images.length;
 }
 function _closeImgLightbox(lb) {
   if(!lb || !lb.parentNode) return;
-  document.removeEventListener('keydown', lb._escHandler);
+  document.removeEventListener('keydown', lb._keyHandler);
   lb.style.animation = 'lb-in .12s ease reverse';
   setTimeout(() => lb.parentNode && lb.parentNode.removeChild(lb), 120);
 }
