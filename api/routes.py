@@ -4152,8 +4152,7 @@ def handle_get(handler, parsed) -> bool:
                     )
             else:
                 if is_messaging_session and cli_messages:
-                    sidecar_messages = getattr(s, "messages", []) or []
-                    _all_msgs = merge_session_messages_append_only(cli_messages, sidecar_messages)
+                    _all_msgs = _merged_session_messages_for_display(s, cli_messages)
                 else:
                     if metadata_summary is None:
                         metadata_summary = _message_summary(getattr(s, "messages", []) or [])
