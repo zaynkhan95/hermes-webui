@@ -2204,12 +2204,14 @@ def _message_counts_as_renderable_for_window(message) -> bool:
     """Return true when a paginated window should include this transcript row.
 
     Tool result rows are rendered through their assistant anchor or hidden as raw
-    tool output. A tail page containing only tool rows makes the frontend set
-    ``S.messages`` to a non-empty array while the visible transcript and topbar
-    count stay empty. Anchor small tail windows on the newest non-tool row so
-    long sessions do not open to a blank chat with only transient metadata.
+    tool output. Empty partial activity rows can be preserved after cancellation
+    to keep thinking/tool details inspectable, but they are not reply text. A
+    tail page containing only transient metadata makes the frontend open to
+    collapsed activity while newer real replies sit behind "load older messages".
     """
     if not isinstance(message, dict):
+        return False
+    if _is_empty_partial_activity_message(message):
         return False
     role = str(message.get("role") or "").strip().lower()
     return bool(role and role != "tool")
@@ -2588,6 +2590,7 @@ from api.models import (
     get_state_db_session_summary,
     merge_session_messages_append_only,
     _session_message_merge_key,
+    _is_empty_partial_activity_message,
     prune_session_from_index,
     ensure_cron_project,
     is_cron_session,

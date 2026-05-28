@@ -369,11 +369,34 @@ def _message_timestamp(message):
         return None
 
 
+def _is_empty_partial_activity_message(message):
+    """Return True for cancelled/recovered activity rows with no reply text."""
+    if not isinstance(message, dict):
+        return False
+    if message.get('role') != 'assistant' or not message.get('_partial'):
+        return False
+    content = message.get('content', '')
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                if part.get('type') == 'text' and str(part.get('text') or part.get('content') or '').strip():
+                    return False
+                continue
+            if str(part or '').strip():
+                return False
+        return True
+    return not str(content or '').strip()
+
+
 def _last_message_timestamp(messages):
     if not isinstance(messages, list):
         return None
     for message in reversed(messages):
         if isinstance(message, dict) and message.get('role') == 'tool':
+            continue
+        if _is_empty_partial_activity_message(message):
             continue
         ts = _message_timestamp(message)
         if ts:

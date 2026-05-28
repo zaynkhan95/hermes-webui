@@ -35,6 +35,13 @@
 
 - Compression parent sessions are no longer repaired as stale interrupted turns when a continuation already exists, preventing false "Response interrupted" markers and hidden continuation rows after auto-compression session rotation. (Refs #2361)
 
+
+- Empty partial activity rows preserved from cancelled turns no longer define
+  sidebar recency, anchor the initial paginated message window, or get restored
+  after newer completed turns. Long sessions with old activity-only partials
+  after recent replies now stay grouped by their latest real message and open on
+  the recent readable transcript. (#3057)
+
 ### Documentation
 
 - Clarify two Docker onboarding traps: `sudo docker compose` can mount `/root/.hermes` instead of the user's Hermes home on Linux, and Linux Docker Engine users should use a `host-gateway` alias such as `api.local` for host-local model servers instead of configuring `localhost` inside the container. (#3006, #3012)

@@ -43,7 +43,11 @@ from api.metering import meter
 from api.run_journal import RunJournalWriter
 from api.turn_journal import append_turn_journal_event_for_stream
 from api.usage import prompt_cache_hit_percent
-from api.models import get_state_db_session_messages, reconciled_state_db_messages_for_session
+from api.models import (
+    _is_empty_partial_activity_message,
+    get_state_db_session_messages,
+    reconciled_state_db_messages_for_session,
+)
 
 # Global lock for os.environ writes. Per-session locks (_agent_lock) prevent
 # concurrent runs of the SAME session, but two DIFFERENT sessions can still
@@ -2434,6 +2438,8 @@ def _restore_display_reasoning_metadata(previous_messages, updated_messages):
     safe_indices = {idx for idx, _ in prev_safe}
     inserted_reasoning_only = 0
     for prev_idx, prev_msg in enumerate(previous_messages):
+        if _is_empty_partial_activity_message(prev_msg):
+            continue
         if prev_idx in safe_indices or not _is_reasoning_only_assistant_message(prev_msg):
             continue
         safe_pos = sum(1 for idx, _ in prev_safe if idx < prev_idx) + inserted_reasoning_only
