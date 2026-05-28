@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Gateway-backed WebUI chat now forwards current-turn image attachments as OpenAI-style multimodal `image_url` parts when native image input is enabled, matching the legacy WebUI runtime's image handoff.
+
 ## [v0.51.152] — 2026-05-28 — Release DX (stage-batch34 — single-PR optional gateway-backed browser chat)
 
 ### Added
