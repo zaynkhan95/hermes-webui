@@ -5902,6 +5902,10 @@ def handle_get(handler, parsed) -> bool:
         #           setup is probably not configured with a gateway
         health = build_agent_health_payload()
         alive = health.get("alive")
+        details = health.get("details") if isinstance(health.get("details"), dict) else {}
+        health_reason = details.get("reason")
+        health_state = details.get("state")
+        health_gateway_state = details.get("gateway_state")
         if alive is True:
             running = True
             configured = True
@@ -5924,10 +5928,9 @@ def handle_get(handler, parsed) -> bool:
             # configured" rather than nagging (#1944). So stale-stopped falls
             # through to the identity_map signal like the genuinely-unconfigured
             # case.
-            details = health.get("details") or {}
             gateway_running_metadata = (
-                details.get("reason") == "gateway_stale_running_state"
-                or details.get("gateway_state") == "running"
+                health_reason == "gateway_stale_running_state"
+                or health_gateway_state == "running"
             )
             configured = True if gateway_running_metadata else bool(identity_map)
             running = bool(identity_map)
@@ -5963,6 +5966,11 @@ def handle_get(handler, parsed) -> bool:
             "platforms": platforms,
             "last_active": last_active,
             "session_count": len(identity_map),
+            "health": {
+                "state": health_state,
+                "reason": health_reason,
+                "gateway_state": health_gateway_state,
+            },
         })
 
     # ── MCP Servers (GET) ──
@@ -7205,11 +7213,21 @@ def handle_post(handler, parsed) -> bool:
 
     # ── Commands (POST) ──
     if parsed.path == "/api/commands/exec":
-        from api.commands import execute_plugin_command
+        from api.commands import execute_agent_command, execute_plugin_command
 
         command = str(body.get("command", "") or "").strip()
         if not command:
             return bad(handler, "command is required")
+
+        try:
+            return j(handler, {"output": execute_agent_command(command)})
+        except KeyError:
+            pass
+        except ValueError as e:
+            return bad(handler, str(e), 400)
+        except RuntimeError as e:
+            return bad(handler, _sanitize_error(e), 500)
+
         try:
             return j(handler, {"output": execute_plugin_command(command)})
         except ValueError as e:
