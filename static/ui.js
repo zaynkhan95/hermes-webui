@@ -5773,6 +5773,19 @@ function _topbarMessageMetaText(){
   // branch above surfaces the raw server total, and only as "loaded of total".
   return t('n_messages',loadedCount);
 }
+function _topbarTelegramTopicContext(session){
+  if(!session) return '';
+  const raw=String(session.raw_source||session.source_tag||session.platform||session.source_label||'').toLowerCase();
+  if(raw!=='telegram') return '';
+  const parts=[];
+  const chatType=String(session.chat_type||'').trim();
+  const chatId=String(session.chat_id||session.origin_chat_id||'').trim();
+  const threadId=String(session.thread_id||'').trim();
+  if(chatType) parts.push(chatType);
+  if(threadId) parts.push('thread '+threadId);
+  else if(chatId) parts.push('chat '+chatId);
+  return parts.join(' · ');
+}
 function syncTopbar(){
   if(!S.session){
     document.title=assistantDisplayName();
@@ -5806,7 +5819,8 @@ function syncTopbar(){
     if(sourceLabel){
       const badge=document.createElement('span');
       badge.className='topbar-source-badge';
-      badge.textContent=sourceLabel+(S.session.read_only?' · read-only':'');
+      const topicContext=_topbarTelegramTopicContext(S.session);
+      badge.textContent=sourceLabel+(topicContext?' · '+topicContext:'')+(S.session.read_only?' · read-only':'');
       _topbarMeta.appendChild(document.createTextNode(' '));
       _topbarMeta.appendChild(badge);
     }

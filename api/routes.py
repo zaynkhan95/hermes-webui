@@ -29,6 +29,7 @@ from api.agent_sessions import (
     MESSAGING_SOURCES,
     is_cli_session_row,
     is_cli_session_row_visible,
+    read_importable_agent_session_rows,
     read_session_lineage_report,
 )
 from api.compression_anchor import visible_messages_for_anchor
@@ -72,6 +73,7 @@ _MESSAGING_SESSION_METADATA_CACHE: dict[str, object] = {
 }
 _MESSAGING_SESSION_METADATA_LOCK = threading.Lock()
 _STALE_MESSAGING_END_REASONS = {"session_reset", "session_switch"}
+TELEGRAM_TOPIC_PROFILES_FILE = STATE_DIR / "telegram_topics.json"
 _CSP_REPORT_LOGGER = logging.getLogger("csp_report")
 _CSP_REPORT_RATE_LIMIT: dict[str, list[float]] = {}
 _CSP_REPORT_RATE_LIMIT_LOCK = threading.Lock()
@@ -2875,6 +2877,230 @@ def _keep_latest_messaging_session_per_source(
     kept.extend(best_by_source.values())
     kept.sort(key=_session_sort_timestamp, reverse=True)
     return kept
+
+
+def _load_telegram_topic_profile_map() -> dict[str, str]:
+    try:
+        raw = json.loads(TELEGRAM_TOPIC_PROFILES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if isinstance(raw, dict) and isinstance(raw.get("profiles"), dict):
+        raw = raw.get("profiles")
+    if not isinstance(raw, dict):
+        return {}
+    profiles: dict[str, str] = {}
+    for key, value in raw.items():
+        identity = str(key or "").strip()
+        profile = str(value or "").strip()
+        if identity and profile:
+            profiles[identity] = profile
+    return profiles
+
+
+def _save_telegram_topic_profile_map(profiles: dict[str, str]) -> None:
+    TELEGRAM_TOPIC_PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"profiles": profiles}, ensure_ascii=False, indent=2)
+    tmp = TELEGRAM_TOPIC_PROFILES_FILE.with_suffix(
+        f".tmp.{os.getpid()}.{threading.current_thread().ident}"
+    )
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, TELEGRAM_TOPIC_PROFILES_FILE)
+
+
+def _telegram_topic_identity(session: dict) -> str | None:
+    if not isinstance(session, dict):
+        return None
+    raw = _session_messaging_raw_source(session)
+    if raw != "telegram":
+        return None
+    return _messaging_session_identity(session, raw)
+
+
+def _telegram_topic_display_label(session: dict) -> str:
+    title = _safe_first(session.get("title"), session.get("display_title"))
+    thread_id = _safe_first(session.get("thread_id"))
+    chat_type = _safe_first(session.get("chat_type"))
+    chat_id = _safe_first(session.get("chat_id"), session.get("origin_chat_id"))
+    if title and title.lower() not in {"telegram", "telegram session", "telegram chat"}:
+        return title
+    if thread_id:
+        return f"Telegram topic {thread_id}"
+    if chat_type and chat_id:
+        return f"Telegram {chat_type} {chat_id}"
+    if chat_id:
+        return f"Telegram chat {chat_id}"
+    return "Telegram topic"
+
+
+def _telegram_topic_meta_label(session: dict) -> str:
+    parts = []
+    chat_type = _safe_first(session.get("chat_type"))
+    chat_id = _safe_first(session.get("chat_id"), session.get("origin_chat_id"))
+    thread_id = _safe_first(session.get("thread_id"))
+    user_id = _safe_first(session.get("user_id"), session.get("origin_user_id"))
+    if chat_type:
+        parts.append(chat_type)
+    if chat_id:
+        parts.append(f"chat {chat_id}")
+    if thread_id:
+        parts.append(f"thread {thread_id}")
+    if user_id and not chat_id:
+        parts.append(f"user {user_id}")
+    return " · ".join(parts)
+
+
+def _telegram_topic_row_from_agent_row(row: dict, *, active_profile: str | None) -> dict:
+    source = _safe_first(row.get("source"), row.get("raw_source"), "telegram")
+    return {
+        "session_id": row.get("id") or row.get("session_id"),
+        "title": row.get("title") or "Telegram topic",
+        "workspace": str(get_last_workspace()),
+        "model": row.get("model") or None,
+        "message_count": row.get("message_count") or row.get("actual_message_count") or 0,
+        "created_at": row.get("started_at") or row.get("created_at"),
+        "updated_at": row.get("last_activity") or row.get("updated_at") or row.get("started_at"),
+        "last_message_at": row.get("last_activity") or row.get("updated_at") or row.get("started_at"),
+        "pinned": False,
+        "archived": False,
+        "project_id": None,
+        "profile": active_profile,
+        "source_tag": source,
+        "raw_source": row.get("raw_source") or source,
+        "user_id": row.get("user_id"),
+        "chat_id": row.get("chat_id") or row.get("origin_chat_id"),
+        "chat_type": row.get("chat_type"),
+        "thread_id": row.get("thread_id"),
+        "session_key": row.get("session_key"),
+        "platform": row.get("platform"),
+        "session_source": row.get("session_source"),
+        "source_label": row.get("source_label") or "Telegram",
+        "parent_session_id": row.get("parent_session_id"),
+        "end_reason": row.get("end_reason"),
+        "actual_message_count": row.get("actual_message_count"),
+        "user_message_count": row.get("actual_user_message_count"),
+        "is_cli_session": is_cli_session_row(row),
+    }
+
+
+def _telegram_topic_source_rows(limit: int = 500) -> list[dict]:
+    try:
+        from api.profiles import get_active_profile_name
+        active_profile = get_active_profile_name()
+    except Exception:
+        active_profile = None
+    db_path = _active_state_db_path()
+    if not db_path.exists():
+        return []
+    rows = read_importable_agent_session_rows(
+        db_path,
+        limit=limit,
+        log=logger,
+        exclude_sources=("cron", "webui"),
+    )
+    sessions = []
+    for row in rows:
+        if _normalize_messaging_source(row.get("source") or row.get("raw_source")) != "telegram":
+            continue
+        sessions.append(_telegram_topic_row_from_agent_row(row, active_profile=active_profile))
+    sessions = _keep_latest_messaging_session_per_source(sessions)
+    return [s for s in sessions if _telegram_topic_identity(s)]
+
+
+def _telegram_topics_payload() -> dict:
+    profiles = _load_telegram_topic_profile_map()
+    topics = []
+    for session in _telegram_topic_source_rows():
+        identity = _telegram_topic_identity(session)
+        if not identity:
+            continue
+        assigned_profile = profiles.get(identity)
+        topic = {
+            "identity": identity,
+            "session_id": session.get("session_id"),
+            "title": _telegram_topic_display_label(session),
+            "meta": _telegram_topic_meta_label(session),
+            "message_count": _numeric_count(session.get("message_count") or session.get("actual_message_count")),
+            "last_message_at": _session_sort_timestamp(session),
+            "model": session.get("model"),
+            "assigned_profile": assigned_profile,
+            "effective_profile": assigned_profile or session.get("profile"),
+            "session_profile": session.get("profile"),
+            "source_label": "Telegram",
+            "chat_id": _safe_first(session.get("chat_id"), session.get("origin_chat_id")),
+            "chat_type": _safe_first(session.get("chat_type")),
+            "thread_id": _safe_first(session.get("thread_id")),
+            "session_key": _safe_first(session.get("session_key")),
+            "user_id": _safe_first(session.get("user_id"), session.get("origin_user_id")),
+        }
+        topics.append(topic)
+    topics.sort(key=lambda item: float(item.get("last_message_at") or 0), reverse=True)
+    return {"topics": topics, "count": len(topics)}
+
+
+def _assigned_profile_for_telegram_session(session: dict | None) -> str | None:
+    if not session:
+        return None
+    identity = _telegram_topic_identity(session)
+    if not identity:
+        return None
+    return _load_telegram_topic_profile_map().get(identity)
+
+
+def _apply_telegram_topic_profile(identity: str, profile: str | None) -> list[str]:
+    updated: list[str] = []
+    for session in _telegram_topic_source_rows():
+        if _telegram_topic_identity(session) != identity:
+            continue
+        sid = _safe_first(session.get("session_id"))
+        if not sid:
+            continue
+        local = Session.load(sid)
+        if not local:
+            continue
+        next_profile = profile or None
+        if getattr(local, "profile", None) == next_profile:
+            continue
+        local.profile = next_profile
+        local.save(touch_updated_at=False)
+        updated.append(sid)
+    return updated
+
+
+def _handle_telegram_topics_profile(handler, body: dict):
+    identity = str(body.get("identity") or "").strip()
+    if not identity or not identity.startswith("telegram"):
+        return bad(handler, "telegram topic identity is required", 400)
+    profile = str(body.get("profile") or "").strip()
+    if profile:
+        try:
+            from api.profiles import _PROFILE_ID_RE, list_profiles_api
+
+            if profile != "default" and not _PROFILE_ID_RE.fullmatch(profile):
+                return bad(handler, "invalid profile", 400)
+            known = {str(p.get("name")) for p in list_profiles_api() if isinstance(p, dict)}
+            if profile not in known:
+                return bad(handler, "profile not found", 404)
+        except ImportError:
+            if profile != "default":
+                return bad(handler, "profiles unavailable", 404)
+    profiles = _load_telegram_topic_profile_map()
+    if profile:
+        profiles[identity] = profile
+    else:
+        profiles.pop(identity, None)
+    _save_telegram_topic_profile_map(profiles)
+    updated_sessions = _apply_telegram_topic_profile(identity, profile or None)
+    if updated_sessions:
+        _publish_session_list_changed("telegram_topic_profile")
+    return j(handler, {
+        "ok": True,
+        "identity": identity,
+        "assigned_profile": profile or None,
+        "updated_sessions": updated_sessions,
+    })
 
 
 from api.models import (
@@ -5923,6 +6149,9 @@ def handle_get(handler, parsed) -> bool:
             },
         )
 
+    if parsed.path == "/api/messaging/telegram/topics":
+        return j(handler, _telegram_topics_payload())
+
     # ── Gateway Status (GET) ──
     if parsed.path == "/api/gateway/status":
         import datetime
@@ -7380,6 +7609,9 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, _sanitize_error(e))
         except RuntimeError as e:
             return bad(handler, str(e), 409)
+
+    if parsed.path == "/api/messaging/telegram/topics/profile":
+        return _handle_telegram_topics_profile(handler, body)
 
     # ── Settings (POST) ──
     if parsed.path == "/api/settings":
@@ -14134,6 +14366,7 @@ def _handle_session_import_cli(handler, body):
             existing.messages = fresh_msgs
             changed = True
         if cli_meta:
+            assigned_profile = _assigned_profile_for_telegram_session(cli_meta)
             updates = {
                 "is_cli_session": True,
                 "source_tag": existing.source_tag or cli_meta.get("source_tag"),
@@ -14141,6 +14374,13 @@ def _handle_session_import_cli(handler, body):
                 "session_source": existing.session_source or cli_meta.get("session_source"),
                 "source_label": existing.source_label or cli_meta.get("source_label"),
                 "parent_session_id": existing.parent_session_id or cli_meta.get("parent_session_id"),
+                "profile": assigned_profile or existing.profile or cli_meta.get("profile"),
+                "user_id": existing.user_id or cli_meta.get("user_id"),
+                "chat_id": existing.chat_id or cli_meta.get("chat_id"),
+                "chat_type": existing.chat_type or cli_meta.get("chat_type"),
+                "thread_id": existing.thread_id or cli_meta.get("thread_id"),
+                "session_key": existing.session_key or cli_meta.get("session_key"),
+                "platform": existing.platform or cli_meta.get("platform"),
             }
             for attr, value in updates.items():
                 if getattr(existing, attr, None) != value:
@@ -14208,6 +14448,21 @@ def _handle_session_import_cli(handler, body):
             cli_parent_session_id = cs.get("parent_session_id")
             cli_read_only = bool(cs.get("read_only"))
             break
+    assigned_profile = _assigned_profile_for_telegram_session({
+        "session_id": sid,
+        "source_tag": cli_source_tag,
+        "raw_source": cli_raw_source or cli_source_tag,
+        "session_source": cli_session_source,
+        "source_label": cli_source_label,
+        "user_id": cli_user_id,
+        "chat_id": cli_chat_id,
+        "chat_type": cli_chat_type,
+        "thread_id": cli_thread_id,
+        "session_key": cli_session_key,
+        "platform": cli_platform,
+    })
+    if assigned_profile:
+        profile = assigned_profile
 
     # Use the CLI session title if available (e.g., cron job name), otherwise derive from messages
     title = cli_title or title_from(msgs, "CLI Session")

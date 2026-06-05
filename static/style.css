@@ -3261,9 +3261,10 @@ main.main > #mainTasks,
 main.main > #mainKanban,
 main.main > #mainWorkspaces,
 main.main > #mainProfiles,
+main.main > #mainTelegram,
 main.main > #mainInsights,
 main.main > #mainLogs{display:none;}
-main.main:not(.showing-settings):not(.showing-skills):not(.showing-memory):not(.showing-tasks):not(.showing-kanban):not(.showing-workspaces):not(.showing-profiles):not(.showing-insights):not(.showing-logs):not(.showing-plugin) > #mainChat{display:flex;}
+main.main:not(.showing-settings):not(.showing-skills):not(.showing-memory):not(.showing-tasks):not(.showing-kanban):not(.showing-workspaces):not(.showing-profiles):not(.showing-telegram):not(.showing-insights):not(.showing-logs):not(.showing-plugin) > #mainChat{display:flex;}
 main.main.showing-settings > #mainSettings{display:flex;overflow-y:auto;}
 main.main.showing-skills > #mainSkills{display:flex;}
 main.main.showing-memory > #mainMemory{display:flex;}
@@ -3271,6 +3272,7 @@ main.main.showing-tasks > #mainTasks{display:flex;}
 main.main.showing-kanban > #mainKanban{display:flex;overflow-y:auto;}
 main.main.showing-workspaces > #mainWorkspaces{display:flex;}
 main.main.showing-profiles > #mainProfiles{display:flex;}
+main.main.showing-telegram > #mainTelegram{display:flex;}
 main.main.showing-logs > #mainLogs{display:flex;}
 main.main.showing-plugin > #mainPlugin{display:flex;}
 main.main > #mainPlugin{display:none;}
@@ -3883,6 +3885,17 @@ main.main > #mainPlugin{display:none;}
 .session-source-chip[data-source-key="slack"] { color: #4A154B; background: rgba(74, 21, 75, 0.12); }
 .session-item.cli-session[data-source-key="claude_code"] { border-left-color: rgba(217, 119, 6, 0.65); }
 .session-source-chip[data-source-key="claude_code"] { color: rgba(217, 119, 6, 0.85); background: rgba(217, 119, 6, 0.12); }
+
+.telegram-topic-list{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:6px;}
+.telegram-topic-card{width:100%;border:1px solid transparent;background:transparent;color:var(--text);border-radius:8px;padding:9px 10px;text-align:left;cursor:pointer;transition:background .15s,border-color .15s,color .15s;}
+.telegram-topic-card:hover{background:var(--surface);}
+.telegram-topic-card.active{background:var(--accent-bg);border-color:var(--accent-bg-strong);color:var(--accent-text);}
+.telegram-topic-name{font-size:13px;font-weight:600;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.telegram-topic-meta{margin-top:3px;font-size:11px;color:var(--muted);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.telegram-topic-card.active .telegram-topic-meta{color:color-mix(in srgb,var(--accent-text) 72%,transparent);}
+.telegram-topic-empty{padding:12px;color:var(--muted);font-size:12px;line-height:1.45;}
+.telegram-topic-detail .telegram-topic-profile-select{width:100%;max-width:320px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px;}
+.telegram-topic-actions{display:flex;gap:8px;margin-top:14px;}
 
 /* ═══════════════════════════════════════════════════════════════════
    Messages redesign — additive overrides for the transcript area.

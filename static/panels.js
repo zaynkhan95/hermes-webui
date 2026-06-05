@@ -39,7 +39,7 @@ let _logsSeverityFilter = 'all';
 const APP_TITLEBAR_KEYS = {
   chat: 'tab_chat', tasks: 'tab_tasks', skills: 'tab_skills',
   memory: 'tab_memory', workspaces: 'tab_workspaces',
-  profiles: 'tab_profiles', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
+  profiles: 'tab_profiles', telegram: 'tab_telegram', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
 };
 
 /**
@@ -245,7 +245,7 @@ async function switchPanel(name, opts = {}) {
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'].forEach(p => {
+    ['settings','skills','memory','tasks','kanban','workspaces','profiles','telegram','insights','logs','plugin'].forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
   }
@@ -256,6 +256,7 @@ async function switchPanel(name, opts = {}) {
   if (nextPanel === 'memory') await loadMemory();
   if (nextPanel === 'workspaces') await loadWorkspacesPanel();
   if (nextPanel === 'profiles') await loadProfilesPanel();
+  if (nextPanel === 'telegram') await loadTelegramTopics();
   if (nextPanel === 'todos') loadTodos();
   if (nextPanel === 'insights') await loadInsights();
   if (nextPanel === 'logs') await loadLogs();
@@ -5315,6 +5316,158 @@ window.addEventListener('resize',()=>{
   const dd=$('profileDropdown');
   if(dd&&dd.classList.contains('open')) _positionProfileDropdown();
 });
+
+// ── Telegram topics panel ──
+let _telegramTopicsCache = [];
+let _currentTelegramTopic = null;
+
+function _telegramFormatTime(value){
+  if(!value) return '';
+  try{
+    const date=new Date(Number(value)*1000);
+    if(Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString();
+  }catch(_e){return '';}
+}
+
+async function _telegramProfileOptions(selected){
+  let profiles = [];
+  try{
+    if(!_profilesCache || !Array.isArray(_profilesCache.profiles)){
+      _profilesCache = await api('/api/profiles');
+    }
+    profiles = Array.isArray(_profilesCache.profiles) ? _profilesCache.profiles : [];
+  }catch(_e){ profiles = []; }
+  const current = String(selected || '');
+  const opts = [`<option value=""${current?'':' selected'}>Use active profile</option>`];
+  for(const p of profiles){
+    if(!p || !p.name) continue;
+    const label = p.is_default ? `${p.name} (${t('default') || 'default'})` : p.name;
+    opts.push(`<option value="${esc(p.name)}"${current===p.name?' selected':''}>${esc(label)}</option>`);
+  }
+  return opts.join('');
+}
+
+async function loadTelegramTopics(force){
+  const panel=$('telegramTopicsPanel');
+  if(!panel) return;
+  if(force) _telegramTopicsCache=[];
+  panel.innerHTML='<div style="color:var(--muted);font-size:12px;padding:8px">Loading...</div>';
+  try{
+    const data=await api('/api/messaging/telegram/topics');
+    _telegramTopicsCache=Array.isArray(data.topics)?data.topics:[];
+    renderTelegramTopicsPanel();
+    if(_currentTelegramTopic){
+      const refreshed=_telegramTopicsCache.find(t=>t.identity===_currentTelegramTopic.identity);
+      if(refreshed) await renderTelegramTopicDetail(refreshed);
+      else clearTelegramTopicDetail();
+    }
+  }catch(e){
+    panel.innerHTML=`<div style="color:var(--accent);font-size:12px;padding:12px">${esc(t('error_prefix'))}${esc(e.message||e)}</div>`;
+    clearTelegramTopicDetail();
+  }
+}
+
+function renderTelegramTopicsPanel(){
+  const panel=$('telegramTopicsPanel');
+  if(!panel) return;
+  panel.innerHTML='';
+  if(!_telegramTopicsCache.length){
+    const empty=document.createElement('div');
+    empty.className='telegram-topic-empty';
+    empty.textContent='No known active Telegram topics yet.';
+    panel.appendChild(empty);
+    clearTelegramTopicDetail();
+    return;
+  }
+  for(const topic of _telegramTopicsCache){
+    const card=document.createElement('button');
+    card.type='button';
+    card.className='telegram-topic-card'+(_currentTelegramTopic&&_currentTelegramTopic.identity===topic.identity?' active':'');
+    card.dataset.identity=topic.identity;
+    const meta=[topic.meta, topic.message_count!=null?`${topic.message_count} messages`:'', topic.assigned_profile?`profile ${topic.assigned_profile}`:'active profile'].filter(Boolean).join(' · ');
+    card.innerHTML=`
+      <div class="telegram-topic-name">${esc(topic.title||'Telegram topic')}</div>
+      <div class="telegram-topic-meta">${esc(meta)}</div>
+    `;
+    card.onclick=()=>renderTelegramTopicDetail(topic);
+    panel.appendChild(card);
+  }
+}
+
+async function renderTelegramTopicDetail(topic){
+  _currentTelegramTopic=topic;
+  renderTelegramTopicsPanel();
+  const title=$('telegramDetailTitle');
+  const body=$('telegramDetailBody');
+  const empty=$('telegramDetailEmpty');
+  const openBtn=$('btnOpenTelegramTopic');
+  if(title) title.textContent=topic.title||'Telegram topic';
+  if(openBtn) openBtn.style.display='';
+  if(empty) empty.style.display='none';
+  if(!body) return;
+  const profileOptions=await _telegramProfileOptions(topic.assigned_profile||'');
+  const rows=[
+    ['Source','Telegram'],
+    ['Topic',topic.meta||'Known Telegram conversation'],
+    ['Messages',String(topic.message_count||0)],
+    ['Last activity',_telegramFormatTime(topic.last_message_at)],
+    ['Session',topic.session_id||''],
+    ['Identity',topic.identity||''],
+  ].filter(row=>row[1]);
+  body.innerHTML=`
+    <div class="main-view-content telegram-topic-detail">
+      <div class="detail-card">
+        <div class="detail-card-title">Telegram topic agent</div>
+        <div class="detail-row">
+          <div class="detail-row-label">Profile</div>
+          <div class="detail-row-value">
+            <select class="telegram-topic-profile-select" data-identity="${esc(topic.identity)}" onchange="saveTelegramTopicProfile(this.dataset.identity,this.value)">${profileOptions}</select>
+          </div>
+        </div>
+        ${rows.map(row=>`<div class="detail-row"><div class="detail-row-label">${esc(row[0])}</div><div class="detail-row-value">${row[0]==='Identity'?`<code>${esc(row[1])}</code>`:esc(row[1])}</div></div>`).join('')}
+        <div class="telegram-topic-actions">
+          <button class="btn primary" type="button" onclick="openSelectedTelegramTopic()">Open conversation</button>
+        </div>
+      </div>
+    </div>`;
+  body.style.display='';
+}
+
+function clearTelegramTopicDetail(){
+  _currentTelegramTopic=null;
+  const title=$('telegramDetailTitle');
+  const body=$('telegramDetailBody');
+  const empty=$('telegramDetailEmpty');
+  const openBtn=$('btnOpenTelegramTopic');
+  if(title) title.textContent='Telegram topics';
+  if(body){body.innerHTML='';body.style.display='none';}
+  if(empty) empty.style.display='';
+  if(openBtn) openBtn.style.display='none';
+}
+
+async function saveTelegramTopicProfile(identity, profile){
+  if(!identity) return;
+  try{
+    const result=await api('/api/messaging/telegram/topics/profile',{method:'POST',body:JSON.stringify({identity,profile})});
+    const assigned=result.assigned_profile||'active profile';
+    showToast('Telegram topic profile: '+assigned);
+    await loadTelegramTopics(true);
+    if(typeof renderSessionList==='function') renderSessionList();
+  }catch(e){
+    showToast('Telegram profile save failed: '+(e.message||e));
+  }
+}
+
+async function openSelectedTelegramTopic(){
+  if(!_currentTelegramTopic || !_currentTelegramTopic.session_id) return;
+  try{
+    await switchPanel('chat');
+    await loadSession(_currentTelegramTopic.session_id);
+  }catch(e){
+    showToast('Open Telegram topic failed: '+(e.message||e));
+  }
+}
 
 async function switchToProfile(name) {
   // Profile switches are per-client cookie/TLS scoped, so a running stream in
