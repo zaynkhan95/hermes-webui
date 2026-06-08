@@ -73,7 +73,6 @@ _MESSAGING_SESSION_METADATA_CACHE: dict[str, object] = {
 }
 _MESSAGING_SESSION_METADATA_LOCK = threading.Lock()
 _STALE_MESSAGING_END_REASONS = {"session_reset", "session_switch"}
-TELEGRAM_TOPIC_PROFILES_FILE = STATE_DIR / "telegram_topics.json"
 _CSP_REPORT_LOGGER = logging.getLogger("csp_report")
 _CSP_REPORT_RATE_LIMIT: dict[str, list[float]] = {}
 _CSP_REPORT_RATE_LIMIT_LOCK = threading.Lock()
@@ -1123,6 +1122,9 @@ from api.agent_health import build_agent_health_payload
 from api.gateway_chat import gateway_chat_config_status
 from api.request_diagnostics import RequestDiagnostics
 from api.system_health import build_system_health_payload
+from api import mission_control
+
+TELEGRAM_TOPIC_PROFILES_FILE = STATE_DIR / "telegram_topics.json"
 
 
 def _kanban_unknown_endpoint(handler, parsed, method: str) -> bool:
@@ -3101,6 +3103,91 @@ def _handle_telegram_topics_profile(handler, body: dict):
         "assigned_profile": profile or None,
         "updated_sessions": updated_sessions,
     })
+
+
+def _mission_control_route_parts(path: str) -> list[str] | None:
+    prefix = "/api/agents/"
+    if not path.startswith(prefix):
+        return None
+    rest = path[len(prefix):].strip("/")
+    if not rest:
+        return None
+    return [part for part in rest.split("/") if part]
+
+
+def _mission_control_known_profiles() -> set[str] | None:
+    try:
+        from api.profiles import list_profiles_api
+
+        return {
+            str(profile.get("name") or "")
+            for profile in list_profiles_api()
+            if isinstance(profile, dict) and profile.get("name")
+        }
+    except Exception:
+        return None
+
+
+def _mission_control_agent_response(handler, agent_id: str):
+    try:
+        return j(handler, {"agent": mission_control.get_agent(agent_id)})
+    except KeyError:
+        return bad(handler, "Agent not found", 404)
+
+
+def _mission_control_agent_conversations(agent_id: str) -> dict:
+    agent = mission_control.get_agent(agent_id)
+    conversations = []
+    for session in all_sessions():
+        if str(session.get("mission_control_agent_id") or "") != agent["id"]:
+            continue
+        conversations.append({
+            "id": str(session.get("session_id") or ""),
+            "sessionId": str(session.get("session_id") or ""),
+            "title": session.get("title") or "Untitled",
+            "source": "Dashboard",
+            "sourceKey": "dashboard",
+            "profile": session.get("profile") or agent.get("profile"),
+            "workspace": session.get("workspace"),
+            "messageCount": _numeric_count(session.get("message_count")),
+            "lastMessageAt": _session_sort_timestamp(session),
+            "canOpen": True,
+            "canReplyToTelegram": False,
+        })
+
+    expected_chat_id = _safe_first(agent.get("telegramChatId"))
+    expected_thread_id = _safe_first(agent.get("telegramThreadId"))
+    for session in _telegram_topic_source_rows():
+        chat_id = _safe_first(session.get("chat_id"), session.get("origin_chat_id"))
+        thread_id = _safe_first(session.get("thread_id"))
+        if expected_chat_id and chat_id != expected_chat_id:
+            continue
+        if expected_thread_id and thread_id != expected_thread_id:
+            continue
+        conversations.append({
+            "id": _telegram_topic_identity(session) or str(session.get("session_id") or ""),
+            "sessionId": str(session.get("session_id") or ""),
+            "title": _telegram_topic_display_label(session),
+            "source": "Telegram",
+            "sourceKey": "telegram",
+            "profile": session.get("profile") or agent.get("profile"),
+            "workspace": session.get("workspace"),
+            "messageCount": _numeric_count(session.get("message_count") or session.get("actual_message_count")),
+            "lastMessageAt": _session_sort_timestamp(session),
+            "canOpen": bool(session.get("session_id")),
+            # TODO: Wire Mission Control's composer directly to a stable Hermes
+            # channel send API once dashboard-originated Telegram replies are
+            # formally exposed by hermes-agent. Existing imported sessions may
+            # still reply through the current session bridge.
+            "canReplyToTelegram": False,
+            "telegram": {
+                "chatId": chat_id,
+                "threadId": thread_id,
+                "identity": _telegram_topic_identity(session),
+            },
+        })
+    conversations.sort(key=lambda item: float(item.get("lastMessageAt") or 0), reverse=True)
+    return {"conversations": conversations, "count": len(conversations)}
 
 
 from api.models import (
@@ -6149,6 +6236,38 @@ def handle_get(handler, parsed) -> bool:
             },
         )
 
+    if parsed.path == "/api/agents":
+        agents = mission_control.list_agents()
+        return j(handler, {"agents": agents, "count": len(agents)})
+
+    if parsed.path == "/api/hermes/status":
+        return j(handler, mission_control.hermes_status_payload())
+
+    agent_parts = _mission_control_route_parts(parsed.path)
+    if agent_parts:
+        agent_id = agent_parts[0]
+        tail = agent_parts[1:]
+        if not tail:
+            return _mission_control_agent_response(handler, agent_id)
+        try:
+            if tail == ["knowledge", "files"]:
+                return j(handler, mission_control.list_knowledge_files(agent_id))
+            if tail == ["knowledge", "file"]:
+                qs = parse_qs(parsed.query)
+                return j(handler, mission_control.read_knowledge_file(agent_id, qs.get("path", [""])[0]))
+            if tail == ["conversations"]:
+                return j(handler, _mission_control_agent_conversations(agent_id))
+            if tail == ["missions"]:
+                return j(handler, mission_control.list_missions(agent_id))
+        except KeyError as exc:
+            message = str(exc).strip("'") or "Not found"
+            status = 404 if "not found" in message.lower() else 400
+            return bad(handler, message, status)
+        except FileNotFoundError as exc:
+            return bad(handler, str(exc), 404)
+        except ValueError as exc:
+            return bad(handler, str(exc), 400)
+
     if parsed.path == "/api/messaging/telegram/topics":
         return j(handler, _telegram_topics_payload())
 
@@ -6503,11 +6622,35 @@ def handle_post(handler, parsed) -> bool:
             bad(handler, str(exc), status=500)
         return True
 
+    agent_parts = _mission_control_route_parts(parsed.path)
+    if agent_parts:
+        agent_id = agent_parts[0]
+        tail = agent_parts[1:]
+        try:
+            if tail == ["missions"]:
+                return j(handler, {"mission": mission_control.create_mission(agent_id, body)}, status=201)
+        except KeyError as exc:
+            message = str(exc).strip("'") or "Not found"
+            status = 404 if "not found" in message.lower() else 400
+            return bad(handler, message, status)
+        except ValueError as exc:
+            return bad(handler, str(exc), 400)
+
     if parsed.path == "/api/session/new":
         try:
             workspace = str(resolve_trusted_workspace(body.get("workspace"))) if body.get("workspace") else None
         except (TypeError, ValueError) as e:
             return bad(handler, str(e))
+        mission_control_agent_id = str(body.get("mission_control_agent_id") or "").strip() or None
+        if mission_control_agent_id:
+            try:
+                agent = mission_control.get_agent(mission_control_agent_id)
+            except KeyError:
+                return bad(handler, "Agent not found", 404)
+            if not workspace:
+                workspace = agent.get("defaultWorkspace") or agent.get("contextRoot") or None
+            if not body.get("profile"):
+                body["profile"] = agent.get("profile") or "default"
         worktree_info = None
         worktree_requested = (
             body.get("worktree") is True
@@ -6553,6 +6696,7 @@ def handle_post(handler, parsed) -> bool:
             profile=body.get("profile") or None,
             project_id=body.get("project_id") or None,
             worktree_info=worktree_info,
+            mission_control_agent_id=mission_control_agent_id,
         )
         if worktree_info:
             publish_session_list_changed("session_new", profile=getattr(s, "profile", None))
@@ -8360,6 +8504,25 @@ def handle_patch(handler, parsed) -> bool:
         if result is False:
             return _kanban_unknown_endpoint(handler, parsed, "PATCH")
         return True
+    agent_parts = _mission_control_route_parts(parsed.path)
+    if agent_parts:
+        agent_id = agent_parts[0]
+        tail = agent_parts[1:]
+        if tail:
+            return False
+        try:
+            agent = mission_control.patch_agent(
+                agent_id,
+                body,
+                known_profiles=_mission_control_known_profiles(),
+            )
+            return j(handler, {"agent": agent})
+        except KeyError as exc:
+            message = str(exc).strip("'") or "Not found"
+            status = 404 if "not found" in message.lower() else 400
+            return bad(handler, message, status)
+        except ValueError as exc:
+            return bad(handler, str(exc), 400)
     return False
 
 
@@ -8389,6 +8552,23 @@ def handle_put(handler, parsed) -> bool:
     if parsed.path.startswith("/api/mcp/servers/"):
         name = parsed.path[len("/api/mcp/servers/"):]
         return _handle_mcp_server_update(handler, name, body)
+    agent_parts = _mission_control_route_parts(parsed.path)
+    if agent_parts:
+        agent_id = agent_parts[0]
+        tail = agent_parts[1:]
+        if tail == ["knowledge", "file"]:
+            try:
+                rel_path = str(body.get("path") or "")
+                content = body.get("content")
+                return j(handler, mission_control.save_knowledge_file(agent_id, rel_path, content))
+            except KeyError as exc:
+                message = str(exc).strip("'") or "Not found"
+                status = 404 if "not found" in message.lower() else 400
+                return bad(handler, message, status)
+            except FileNotFoundError as exc:
+                return bad(handler, str(exc), 404)
+            except ValueError as exc:
+                return bad(handler, str(exc), 400)
     return False
 
 # ── GET route helpers ─────────────────────────────────────────────────────────
@@ -14369,18 +14549,18 @@ def _handle_session_import_cli(handler, body):
             assigned_profile = _assigned_profile_for_telegram_session(cli_meta)
             updates = {
                 "is_cli_session": True,
-                "source_tag": existing.source_tag or cli_meta.get("source_tag"),
-                "raw_source": existing.raw_source or cli_meta.get("raw_source") or cli_meta.get("source_tag"),
-                "session_source": existing.session_source or cli_meta.get("session_source"),
-                "source_label": existing.source_label or cli_meta.get("source_label"),
-                "parent_session_id": existing.parent_session_id or cli_meta.get("parent_session_id"),
-                "profile": assigned_profile or existing.profile or cli_meta.get("profile"),
-                "user_id": existing.user_id or cli_meta.get("user_id"),
-                "chat_id": existing.chat_id or cli_meta.get("chat_id"),
-                "chat_type": existing.chat_type or cli_meta.get("chat_type"),
-                "thread_id": existing.thread_id or cli_meta.get("thread_id"),
-                "session_key": existing.session_key or cli_meta.get("session_key"),
-                "platform": existing.platform or cli_meta.get("platform"),
+                "source_tag": getattr(existing, "source_tag", None) or cli_meta.get("source_tag"),
+                "raw_source": getattr(existing, "raw_source", None) or cli_meta.get("raw_source") or cli_meta.get("source_tag"),
+                "session_source": getattr(existing, "session_source", None) or cli_meta.get("session_source"),
+                "source_label": getattr(existing, "source_label", None) or cli_meta.get("source_label"),
+                "parent_session_id": getattr(existing, "parent_session_id", None) or cli_meta.get("parent_session_id"),
+                "profile": assigned_profile or getattr(existing, "profile", None) or cli_meta.get("profile"),
+                "user_id": getattr(existing, "user_id", None) or cli_meta.get("user_id"),
+                "chat_id": getattr(existing, "chat_id", None) or cli_meta.get("chat_id"),
+                "chat_type": getattr(existing, "chat_type", None) or cli_meta.get("chat_type"),
+                "thread_id": getattr(existing, "thread_id", None) or cli_meta.get("thread_id"),
+                "session_key": getattr(existing, "session_key", None) or cli_meta.get("session_key"),
+                "platform": getattr(existing, "platform", None) or cli_meta.get("platform"),
             }
             for attr, value in updates.items():
                 if getattr(existing, attr, None) != value:

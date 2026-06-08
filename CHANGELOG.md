@@ -3,6 +3,13 @@
 
 ## [Unreleased]
 
+### Added
+- **Mission Control Agents MVP** — added an Agents panel with seeded Hermes Agent profiles, Agent-scoped conversations, context-root knowledge editing, local mission records, safe Agent metadata settings, and a redacted Hermes status API.
+- **Telegram topics view** — a new sidebar panel lists known active Telegram topic identities from Hermes Agent/Gateway state, lets each topic be assigned to a Hermes profile, and opens the related conversation through the existing session import path. Telegram-backed chats also show chat/thread context in the topbar badge.
+
+### Changed
+- **Mission Control seed Agents now match the three active domain profiles** — `default`, `finx1`, and `health` replace the earlier topic-level seven-Agent seed list while keeping local overrides and missions under WebUI state.
+
 ## [v0.51.267] — 2026-06-04 — Release II (stage-r17 — TTS + CSRF forwarded-header security hardening)
 
 ### Security

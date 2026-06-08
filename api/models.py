@@ -572,7 +572,8 @@ class Session:
                  truncation_watermark=None,
                  gateway_routing=None, gateway_routing_history=None,
                  llm_title_generated: bool=False,
-                parent_session_id: str=None,
+                 parent_session_id: str=None,
+                mission_control_agent_id: str=None,
                 worktree_path=None,
                 worktree_branch=None,
                 worktree_repo_root=None,
@@ -621,6 +622,7 @@ class Session:
         self.gateway_routing_history = gateway_routing_history if isinstance(gateway_routing_history, list) else []
         self.llm_title_generated = bool(llm_title_generated)
         self.parent_session_id = parent_session_id
+        self.mission_control_agent_id = mission_control_agent_id or kwargs.get('mission_control_agent_id') or None
         self.worktree_path = str(Path(worktree_path).expanduser().resolve()) if worktree_path else None
         self.worktree_branch = str(worktree_branch) if worktree_branch else None
         self.worktree_repo_root = str(Path(worktree_repo_root).expanduser().resolve()) if worktree_repo_root else None
@@ -691,7 +693,7 @@ class Session:
             'context_length', 'threshold_tokens', 'last_prompt_tokens',
             'truncation_watermark',
             'gateway_routing', 'gateway_routing_history', 'llm_title_generated',
-            'parent_session_id',
+            'parent_session_id', 'mission_control_agent_id',
             'worktree_path', 'worktree_branch', 'worktree_repo_root', 'worktree_created_at',
             'is_cli_session', 'source_tag', 'raw_source', 'session_source', 'source_label',
             'user_id', 'chat_id', 'chat_type', 'thread_id', 'session_key', 'platform',
@@ -901,6 +903,7 @@ class Session:
             # Only emit 'parent_session_id' when set (the /branch fork link, #1342).
             # Sessions without a fork must not leak None — see test_session_lineage_metadata_api.
             **({'parent_session_id': self.parent_session_id} if self.parent_session_id else {}),
+            **({'mission_control_agent_id': self.mission_control_agent_id} if self.mission_control_agent_id else {}),
             **({
                 'worktree_path': self.worktree_path,
                 'worktree_branch': self.worktree_branch,
@@ -2317,7 +2320,15 @@ def _profile_default_model_state(profile=None):
     return default_model or get_effective_default_model(), default_provider
 
 
-def new_session(workspace=None, model=None, profile=None, model_provider=None, project_id=None, worktree_info=None):
+def new_session(
+    workspace=None,
+    model=None,
+    profile=None,
+    model_provider=None,
+    project_id=None,
+    worktree_info=None,
+    mission_control_agent_id=None,
+):
     """Create a new in-memory session.
 
     The session lives in the SESSIONS dict only — no disk write happens until
@@ -2366,6 +2377,7 @@ def new_session(workspace=None, model=None, profile=None, model_provider=None, p
         profile=profile,
         project_id=project_id,
         personality=None,
+        mission_control_agent_id=mission_control_agent_id,
         worktree_path=wt.get('path') if wt else None,
         worktree_branch=wt.get('branch') if wt else None,
         worktree_repo_root=wt.get('repo_root') if wt else None,

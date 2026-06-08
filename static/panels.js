@@ -39,7 +39,7 @@ let _logsSeverityFilter = 'all';
 const APP_TITLEBAR_KEYS = {
   chat: 'tab_chat', tasks: 'tab_tasks', skills: 'tab_skills',
   memory: 'tab_memory', workspaces: 'tab_workspaces',
-  profiles: 'tab_profiles', telegram: 'tab_telegram', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
+  profiles: 'tab_profiles', agents: 'tab_agents', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
 };
 
 /**
@@ -245,7 +245,7 @@ async function switchPanel(name, opts = {}) {
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','kanban','workspaces','profiles','telegram','insights','logs','plugin'].forEach(p => {
+    ['settings','skills','memory','tasks','kanban','workspaces','profiles','agents','insights','logs','plugin'].forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
   }
@@ -256,7 +256,7 @@ async function switchPanel(name, opts = {}) {
   if (nextPanel === 'memory') await loadMemory();
   if (nextPanel === 'workspaces') await loadWorkspacesPanel();
   if (nextPanel === 'profiles') await loadProfilesPanel();
-  if (nextPanel === 'telegram') await loadTelegramTopics();
+  if (nextPanel === 'agents') await loadMissionControlAgents();
   if (nextPanel === 'todos') loadTodos();
   if (nextPanel === 'insights') await loadInsights();
   if (nextPanel === 'logs') await loadLogs();
@@ -5317,6 +5317,425 @@ window.addEventListener('resize',()=>{
   if(dd&&dd.classList.contains('open')) _positionProfileDropdown();
 });
 
+// ── Mission Control Agents panel ──
+let _missionControlAgentsCache = [];
+let _currentMissionControlAgent = null;
+let _currentAgentTab = 'conversations';
+let _currentAgentKnowledgePath = '';
+
+function _agentById(agentId){
+  return (_missionControlAgentsCache||[]).find(agent=>agent&&agent.id===agentId)||null;
+}
+
+function _agentMetaLine(agent){
+  if(!agent) return '';
+  return [
+    agent.purpose||'',
+    agent.profile?`profile ${agent.profile}`:'',
+    agent.telegramThreadId?`thread ${agent.telegramThreadId}`:'',
+    agent.contextRoot||'',
+    agent.status?`status ${agent.status}`:'',
+  ].filter(Boolean).join(' · ');
+}
+
+function _agentSourceBadge(sourceKey, label){
+  const key=String(sourceKey||'dashboard').toLowerCase();
+  return `<span class="agent-source-badge" data-source-key="${esc(key)}">${esc(label||sourceKey||'Dashboard')}</span>`;
+}
+
+async function loadMissionControlAgents(force){
+  const panel=$('agentsPanel');
+  if(!panel) return;
+  if(force) _missionControlAgentsCache=[];
+  panel.innerHTML='<div style="color:var(--muted);font-size:12px;padding:8px">Loading...</div>';
+  try{
+    const data=await api('/api/agents');
+    _missionControlAgentsCache=Array.isArray(data.agents)?data.agents:[];
+    renderMissionControlAgentsPanel();
+    const currentId=_currentMissionControlAgent&&_currentMissionControlAgent.id;
+    const next=_agentById(currentId)||_missionControlAgentsCache[0]||null;
+    if(next) await selectMissionControlAgent(next.id,{preserveTab:true});
+    else renderMissionControlEmpty();
+  }catch(e){
+    panel.innerHTML=`<div class="telegram-topic-empty">${esc(t('error_prefix'))}${esc(e.message||e)}</div>`;
+    renderMissionControlEmpty();
+  }
+}
+
+function renderMissionControlAgentsPanel(){
+  const panel=$('agentsPanel');
+  if(!panel) return;
+  panel.innerHTML='';
+  if(!_missionControlAgentsCache.length){
+    panel.innerHTML='<div class="telegram-topic-empty">No Agents configured.</div>';
+    return;
+  }
+  for(const agent of _missionControlAgentsCache){
+    const card=document.createElement('button');
+    card.type='button';
+    card.className='agent-card'+(_currentMissionControlAgent&&_currentMissionControlAgent.id===agent.id?' active':'');
+    card.dataset.agentId=agent.id;
+    card.innerHTML=`
+      <div class="agent-card-name">${esc(agent.name||agent.id)}</div>
+      <div class="agent-card-purpose">${esc(agent.purpose||'')}</div>
+      <div class="agent-card-meta">${esc([agent.profile, agent.telegramThreadId?`thread ${agent.telegramThreadId}`:''].filter(Boolean).join(' · '))}</div>
+    `;
+    card.onclick=()=>selectMissionControlAgent(agent.id);
+    panel.appendChild(card);
+  }
+}
+
+function renderMissionControlEmpty(){
+  const title=$('agentDetailTitle');
+  const meta=$('agentDetailMeta');
+  const body=$('agentDetailBody');
+  const newBtn=$('btnNewAgentConversation');
+  if(title) title.textContent='Agents';
+  if(meta) meta.textContent='';
+  if(newBtn) newBtn.style.display='none';
+  if(body) body.innerHTML='<div class="main-view-empty"><div class="main-view-empty-title">Select an Agent</div><div class="main-view-empty-sub">Pick an Agent from the sidebar.</div></div>';
+}
+
+async function selectMissionControlAgent(agentId, opts={}){
+  const agent=_agentById(agentId);
+  if(!agent) return;
+  _currentMissionControlAgent=agent;
+  renderMissionControlAgentsPanel();
+  renderMissionControlAgentHeader();
+  renderAgentSettings();
+  if(!opts.preserveTab) _currentAgentTab='conversations';
+  switchAgentTab(_currentAgentTab,{skipLoad:true});
+  await refreshCurrentAgent();
+}
+
+function renderMissionControlAgentHeader(){
+  const agent=_currentMissionControlAgent;
+  const title=$('agentDetailTitle');
+  const meta=$('agentDetailMeta');
+  const newBtn=$('btnNewAgentConversation');
+  if(title) title.textContent=agent?agent.name:'Agents';
+  if(meta) meta.textContent=_agentMetaLine(agent);
+  if(newBtn) newBtn.style.display=agent?'':'none';
+}
+
+function switchAgentTab(name, opts={}){
+  const tab=['conversations','knowledge','missions','settings'].includes(name)?name:'conversations';
+  _currentAgentTab=tab;
+  document.querySelectorAll('.agent-tab').forEach(btn=>{
+    btn.classList.toggle('active',btn.dataset.agentTab===tab);
+  });
+  document.querySelectorAll('.agent-tab-pane').forEach(pane=>{
+    pane.classList.toggle('active',pane.dataset.agentPane===tab);
+  });
+  if(!opts.skipLoad) refreshCurrentAgent();
+}
+
+async function refreshCurrentAgent(){
+  if(!_currentMissionControlAgent) return;
+  if(_currentAgentTab==='conversations') return loadAgentConversations();
+  if(_currentAgentTab==='knowledge') return loadAgentKnowledgeFiles();
+  if(_currentAgentTab==='missions') return loadAgentMissions();
+  renderAgentSettings();
+}
+
+async function loadAgentConversations(){
+  const agent=_currentMissionControlAgent;
+  const list=$('agentConversationsList');
+  const detail=$('agentConversationDetail');
+  if(!agent||!list) return;
+  list.innerHTML='<div class="agent-loading">Loading conversations...</div>';
+  if(detail) detail.innerHTML='<div class="agent-muted">Select a conversation.</div>';
+  try{
+    const data=await api(`/api/agents/${encodeURIComponent(agent.id)}/conversations`);
+    const rows=Array.isArray(data.conversations)?data.conversations:[];
+    if(!rows.length){
+      list.innerHTML='<div class="agent-muted">No conversations yet.</div>';
+      if(detail) detail.innerHTML='<button class="btn primary" type="button" onclick="startAgentConversation()">New conversation</button>';
+      return;
+    }
+    list.innerHTML='';
+    rows.forEach((row,idx)=>{
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='agent-row';
+      btn.dataset.sessionId=row.sessionId||'';
+      btn.innerHTML=`
+        <div class="agent-row-title">${esc(row.title||'Untitled')}</div>
+        <div class="agent-row-meta">${_agentSourceBadge(row.sourceKey,row.source)}<span>${esc(row.messageCount||0)} messages</span></div>
+      `;
+      btn.onclick=()=>renderAgentConversationDetail(row);
+      list.appendChild(btn);
+      if(idx===0) renderAgentConversationDetail(row);
+    });
+  }catch(e){
+    list.innerHTML=`<div class="agent-error">${esc(e.message||e)}</div>`;
+  }
+}
+
+function _agentMessageContent(message){
+  const content=message&&message.content;
+  if(typeof content==='string') return content;
+  if(Array.isArray(content)){
+    return content.map(part=>{
+      if(typeof part==='string') return part;
+      if(part&&typeof part.text==='string') return part.text;
+      if(part&&typeof part.content==='string') return part.content;
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  if(content==null) return '';
+  return String(content);
+}
+
+async function renderAgentConversationDetail(row){
+  const detail=$('agentConversationDetail');
+  if(!detail) return;
+  const sourceBadge=_agentSourceBadge(row.sourceKey,row.source);
+  detail.innerHTML=`
+    <div class="agent-detail-toolbar">
+      <div><strong>${esc(row.title||'Untitled')}</strong><div class="agent-row-meta">${sourceBadge}<span>${esc(row.profile||'')}</span></div></div>
+      <button class="btn" type="button" onclick="openAgentConversation('${esc(row.sessionId||'')}')">Open</button>
+    </div>
+    <div class="agent-loading">Loading messages...</div>
+  `;
+  if(!row.sessionId) return;
+  try{
+    const data=await api(`/api/session?session_id=${encodeURIComponent(row.sessionId)}&messages=1&resolve_model=0&msg_limit=60`);
+    const session=data.session||{};
+    const messages=Array.isArray(session.messages)?session.messages:[];
+    const body=messages.length
+      ? messages.map(message=>{
+          const role=String(message.role||'message');
+          if(role==='tool') return '';
+          const text=_agentMessageContent(message);
+          const rendered=(role==='assistant'&&typeof renderMd==='function')?renderMd(text):esc(text);
+          return `<div class="agent-message agent-message-${esc(role)}"><div class="agent-message-role">${esc(role)}</div><div class="agent-message-body">${rendered}</div></div>`;
+        }).join('')
+      : '<div class="agent-muted">No messages loaded.</div>';
+    detail.innerHTML=`
+      <div class="agent-detail-toolbar">
+        <div><strong>${esc(row.title||session.title||'Untitled')}</strong><div class="agent-row-meta">${sourceBadge}<span>${esc(row.profile||session.profile||'')}</span></div></div>
+        <button class="btn" type="button" onclick="openAgentConversation('${esc(row.sessionId||'')}')">Open</button>
+      </div>
+      <div class="agent-message-list">${body}</div>
+      <div class="agent-inline-composer">
+        <textarea id="agentConversationPrompt" rows="3" placeholder="Reply in this conversation"></textarea>
+        <button class="btn primary" type="button" onclick="sendAgentConversationMessage('${esc(row.sessionId||'')}')">Send</button>
+      </div>
+    `;
+  }catch(e){
+    detail.innerHTML+=`<div class="agent-error">${esc(e.message||e)}</div>`;
+  }
+}
+
+async function openAgentConversation(sessionId){
+  if(!sessionId) return;
+  try{
+    await switchPanel('chat');
+    await loadSession(sessionId);
+  }catch(e){
+    showToast('Open conversation failed: '+(e.message||e));
+  }
+}
+
+async function sendAgentConversationMessage(sessionId){
+  const input=$('agentConversationPrompt');
+  const text=input?String(input.value||'').trim():'';
+  if(!sessionId||!text) return;
+  await openAgentConversation(sessionId);
+  const msg=$('msg');
+  if(msg) msg.value=text;
+  if(typeof autoResize==='function') autoResize();
+  if(typeof send==='function') send();
+}
+
+async function startAgentConversation(){
+  const agent=_currentMissionControlAgent;
+  if(!agent||typeof newSession!=='function') return;
+  try{
+    await newSession(false,{
+      missionControlAgentId:agent.id,
+      profile:agent.profile||'default',
+      workspace:null,
+    });
+    if(typeof renderSessionList==='function') renderSessionList();
+    await switchPanel('chat');
+  }catch(e){
+    showToast('Agent conversation failed: '+(e.message||e));
+  }
+}
+
+async function loadAgentKnowledgeFiles(){
+  const agent=_currentMissionControlAgent;
+  const list=$('agentKnowledgeList');
+  const editor=$('agentKnowledgeEditor');
+  if(!agent||!list) return;
+  list.innerHTML='<div class="agent-loading">Loading files...</div>';
+  if(editor) editor.innerHTML='<div class="agent-muted">Select a markdown or text file.</div>';
+  try{
+    const data=await api(`/api/agents/${encodeURIComponent(agent.id)}/knowledge/files`);
+    const files=Array.isArray(data.files)?data.files:[];
+    if(!files.length){
+      list.innerHTML='<div class="agent-muted">No markdown or text files found.</div>';
+      return;
+    }
+    list.innerHTML='';
+    files.forEach(file=>{
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='agent-row';
+      btn.dataset.path=file.path;
+      btn.innerHTML=`<div class="agent-row-title">${esc(file.path)}</div><div class="agent-row-meta"><span>${esc(file.size||0)} bytes</span></div>`;
+      btn.onclick=()=>openAgentKnowledgeFile(file.path);
+      list.appendChild(btn);
+    });
+  }catch(e){
+    list.innerHTML=`<div class="agent-error">${esc(e.message||e)}</div>`;
+  }
+}
+
+async function openAgentKnowledgeFile(path){
+  const agent=_currentMissionControlAgent;
+  const editor=$('agentKnowledgeEditor');
+  if(!agent||!editor||!path) return;
+  _currentAgentKnowledgePath=path;
+  editor.innerHTML='<div class="agent-loading">Opening file...</div>';
+  try{
+    const data=await api(`/api/agents/${encodeURIComponent(agent.id)}/knowledge/file?path=${encodeURIComponent(path)}`);
+    editor.innerHTML=`
+      <div class="agent-editor-head">
+        <strong>${esc(data.path||path)}</strong>
+        <button class="btn primary" type="button" onclick="saveAgentKnowledgeFile()">Save</button>
+      </div>
+      <textarea class="agent-knowledge-editor" id="agentKnowledgeContent">${esc(data.content||'')}</textarea>
+    `;
+  }catch(e){
+    editor.innerHTML=`<div class="agent-error">${esc(e.message||e)}</div>`;
+  }
+}
+
+async function saveAgentKnowledgeFile(){
+  const agent=_currentMissionControlAgent;
+  const input=$('agentKnowledgeContent');
+  if(!agent||!input||!_currentAgentKnowledgePath) return;
+  try{
+    await api(`/api/agents/${encodeURIComponent(agent.id)}/knowledge/file`,{
+      method:'PUT',
+      body:JSON.stringify({path:_currentAgentKnowledgePath,content:input.value||''}),
+    });
+    showToast('Knowledge saved');
+    await loadAgentKnowledgeFiles();
+    await openAgentKnowledgeFile(_currentAgentKnowledgePath);
+  }catch(e){
+    showToast('Knowledge save failed: '+(e.message||e));
+  }
+}
+
+async function loadAgentMissions(){
+  const agent=_currentMissionControlAgent;
+  const list=$('agentMissionsList');
+  const composer=$('agentMissionComposer');
+  if(!agent||!list||!composer) return;
+  list.innerHTML='<div class="agent-loading">Loading missions...</div>';
+  composer.innerHTML=`
+    <div class="agent-form">
+      <label>Title<input id="agentMissionTitle" type="text"></label>
+      <label>Description<textarea id="agentMissionDescription" rows="5"></textarea></label>
+      <label>Workdir<input id="agentMissionWorkdir" type="text" value="${esc(agent.defaultWorkspace||'')}"></label>
+      <button class="btn primary" type="button" onclick="createAgentMission()">Create mission</button>
+    </div>
+  `;
+  try{
+    const data=await api(`/api/agents/${encodeURIComponent(agent.id)}/missions`);
+    const missions=Array.isArray(data.missions)?data.missions:[];
+    if(!missions.length){
+      list.innerHTML='<div class="agent-muted">No missions yet.</div>';
+      return;
+    }
+    list.innerHTML=missions.map(mission=>`
+      <div class="agent-mission-row">
+        <div class="agent-row-title">${esc(mission.title||'Untitled mission')}</div>
+        <div class="agent-row-meta"><span class="agent-status-chip">${esc(mission.status||'queued')}</span><span>${esc(mission.profile||'')}</span></div>
+      </div>
+    `).join('');
+  }catch(e){
+    list.innerHTML=`<div class="agent-error">${esc(e.message||e)}</div>`;
+  }
+}
+
+async function createAgentMission(){
+  const agent=_currentMissionControlAgent;
+  if(!agent) return;
+  const title=$('agentMissionTitle');
+  const description=$('agentMissionDescription');
+  const workdir=$('agentMissionWorkdir');
+  try{
+    await api(`/api/agents/${encodeURIComponent(agent.id)}/missions`,{
+      method:'POST',
+      body:JSON.stringify({
+        title:title?title.value:'',
+        description:description?description.value:'',
+        agentId:agent.id,
+        profile:agent.profile||'default',
+        workdir:workdir?workdir.value:'',
+      }),
+    });
+    showToast('Mission queued');
+    await loadAgentMissions();
+  }catch(e){
+    showToast('Mission create failed: '+(e.message||e));
+  }
+}
+
+function renderAgentSettings(){
+  const agent=_currentMissionControlAgent;
+  const panel=$('agentSettingsPanel');
+  if(!agent||!panel) return;
+  panel.innerHTML=`
+    <div class="agent-form agent-settings-form">
+      <label>Name<input id="agentSettingName" type="text" value="${esc(agent.name||'')}"></label>
+      <label>Purpose<textarea id="agentSettingPurpose" rows="4">${esc(agent.purpose||'')}</textarea></label>
+      <label>Profile<input id="agentSettingProfile" type="text" value="${esc(agent.profile||'default')}"></label>
+      <label>Telegram thread<input id="agentSettingThread" type="text" value="${esc(agent.telegramThreadId||'')}"></label>
+      <label>Context root<input id="agentSettingContext" type="text" value="${esc(agent.contextRoot||'')}"></label>
+      <label>Default workspace<input id="agentSettingWorkspace" type="text" value="${esc(agent.defaultWorkspace||'')}"></label>
+      <label>Status<select id="agentSettingStatus">
+        ${['ready','unknown','offline','degraded'].map(status=>`<option value="${status}"${agent.status===status?' selected':''}>${status}</option>`).join('')}
+      </select></label>
+      <button class="btn primary" type="button" onclick="saveAgentSettings()">Save settings</button>
+    </div>
+  `;
+}
+
+async function saveAgentSettings(){
+  const agent=_currentMissionControlAgent;
+  if(!agent) return;
+  const payload={
+    name:($('agentSettingName')||{}).value||'',
+    purpose:($('agentSettingPurpose')||{}).value||'',
+    profile:($('agentSettingProfile')||{}).value||'default',
+    telegramThreadId:($('agentSettingThread')||{}).value||'',
+    contextRoot:($('agentSettingContext')||{}).value||'',
+    defaultWorkspace:($('agentSettingWorkspace')||{}).value||'',
+    status:($('agentSettingStatus')||{}).value||'ready',
+  };
+  try{
+    const data=await api(`/api/agents/${encodeURIComponent(agent.id)}`,{
+      method:'PATCH',
+      body:JSON.stringify(payload),
+    });
+    _currentMissionControlAgent=data.agent;
+    const idx=_missionControlAgentsCache.findIndex(item=>item&&item.id===data.agent.id);
+    if(idx>=0) _missionControlAgentsCache[idx]=data.agent;
+    renderMissionControlAgentsPanel();
+    renderMissionControlAgentHeader();
+    renderAgentSettings();
+    showToast('Agent settings saved');
+  }catch(e){
+    showToast('Agent settings failed: '+(e.message||e));
+  }
+}
+
 // ── Telegram topics panel ──
 let _telegramTopicsCache = [];
 let _currentTelegramTopic = null;
@@ -5937,7 +6356,7 @@ function switchSettingsSection(name){
     _currentPanel = 'settings';
     var mainEl = document.querySelector('main.main');
     if (mainEl) {
-      ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'].forEach(function(p) {
+      ['settings','skills','memory','tasks','kanban','workspaces','profiles','agents','insights','logs','plugin'].forEach(function(p) {
         mainEl.classList.toggle('showing-' + p, p === 'settings');
       });
     }

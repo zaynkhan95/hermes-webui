@@ -560,11 +560,14 @@ async function newSession(flash, options={}){
     // blank-page display on all subsequent returns to the empty state (#823).
     const switchWs=S._profileSwitchWorkspace;
     S._profileSwitchWorkspace=null;
-    const inheritWs=switchWs||(S.session?S.session.workspace:null)||(S._profileDefaultWorkspace||null);
+    const hasExplicitWorkspace=options&&Object.prototype.hasOwnProperty.call(options,'workspace');
+    const inheritWs=hasExplicitWorkspace?options.workspace:(switchWs||(S.session?S.session.workspace:null)||(S._profileDefaultWorkspace||null));
     const reqBody={
       workspace:inheritWs,
       profile:S.activeProfile||'default',
     };
+    if(options&&options.profile) reqBody.profile=options.profile;
+    if(options&&options.missionControlAgentId) reqBody.mission_control_agent_id=options.missionControlAgentId;
     if(S.session&&S.session.session_id) reqBody.prev_session_id=S.session.session_id;
     if(options&&options.worktree) reqBody.worktree=true;
     if(_activeProject&&_activeProject!==NO_PROJECT_FILTER) reqBody.project_id=_activeProject;
