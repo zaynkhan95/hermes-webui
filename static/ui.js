@@ -146,6 +146,26 @@ async function _recoverFromOfflineSoftly(){
   }
 }
 function _isAbortError(e){return !!(e&&(e.name==='AbortError'||e.code===20));}
+function _prefersReducedMotion(){
+  try{
+    return !!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }catch(_){
+    return false;
+  }
+}
+function _triggerHaptic(ms){
+  if(_prefersReducedMotion()) return false;
+  const duration=Number(ms)||0;
+  if(duration<=0) return false;
+  const desktopBridge=(typeof window!=='undefined')?window.__HERMES_DESKTOP__:null;
+  if(desktopBridge&&typeof desktopBridge.haptic==='function'){
+    try{desktopBridge.haptic({duration});return true;}
+    catch(_){}
+  }
+  if(typeof navigator==='undefined'||typeof navigator.vibrate!=='function') return false;
+  try{return navigator.vibrate(duration)!==false;}
+  catch(_){return false;}
+}
 function _patchOfflineFetch(){
   if(_offlineFetchPatched||typeof window.fetch!=='function')return;
   _offlineFetchPatched=true;
@@ -2487,6 +2507,7 @@ let _lastScrollTop=null;
 let _lastNonMessageScrollIntentMs=-Infinity;
 let _messageUserUnpinned=false;
 let _bottomSettleToken=0;
+let _smoothScrollToken=0;
 let _settleRAF=0;
 let _settleRO=null;
 let _settleTimer=0;
@@ -2583,6 +2604,7 @@ function _resetScrollDirectionTracker(){
   _scrollPinned=true;
   _nearBottomCount=0;
   _touchStartY=null;
+  _syncCompletedTodoSeenSet([]);
 }
 function _resetStreamScrollFollow(){
   _clearNewMessageScrollCue();
@@ -3124,10 +3146,39 @@ document.addEventListener('DOMContentLoaded',function(){
   tooltip.addEventListener('click',function(e){e.stopPropagation();});
 });
 
-function _setMessageScrollToBottom(){
+function _releaseProgrammaticScroll(){
+  requestAnimationFrame(()=>{ setTimeout(()=>{_programmaticScroll=false;},0); });
+}
+function _setMessageScrollToBottom(options){
   const el=$('messages');
   if(!el) return;
+  const smooth=!!(options&&options.smooth)&&!_prefersReducedMotion()&&typeof el.scrollTo==='function';
   _programmaticScroll=true;
+  if(smooth){
+    const token=++_smoothScrollToken;
+    try{
+      el.scrollTo({top:el.scrollHeight,behavior:'smooth'});
+    }catch(_){
+      _smoothScrollToken++;
+      el.scrollTop=el.scrollHeight;
+      _lastScrollTop=el.scrollTop;
+      _nearBottomCount=2;
+      _scrollPinned=true;
+      _releaseProgrammaticScroll();
+      return;
+    }
+    _nearBottomCount=2;
+    _scrollPinned=true;
+    // Keep the programmatic latch through the browser's smooth-scroll frames so
+    // the scroll listener does not misread them as user intent. A later settle
+    // pass still writes the final exact bottom position after layout growth.
+    setTimeout(()=>{
+      if(token!==_smoothScrollToken) return;
+      _lastScrollTop=el.scrollTop;
+      _releaseProgrammaticScroll();
+    },360);
+    return;
+  }
   el.scrollTop=el.scrollHeight;
   _lastScrollTop=el.scrollTop;
   _nearBottomCount=2;
@@ -3140,14 +3191,14 @@ function _setMessageScrollToBottom(){
     // is the authoritative "user scrolled away" signal, so DON'T snap them back
     // or re-pin if so; only release the programmatic-scroll latch.
     if(_messageUserUnpinned || !_scrollPinned || _recentNonMessageScrollIntent()){
-      requestAnimationFrame(()=>{ setTimeout(()=>{_programmaticScroll=false;},0); });
+      _releaseProgrammaticScroll();
       return;
     }
     el.scrollTop=el.scrollHeight;
     _lastScrollTop=el.scrollTop;
     _nearBottomCount=2;
     _scrollPinned=true;
-    requestAnimationFrame(()=>{ setTimeout(()=>{_programmaticScroll=false;},0); });
+    _releaseProgrammaticScroll();
   });
 }
 function _isMessagePaneNearBottom(threshold=250){
@@ -3174,11 +3225,12 @@ function _followMessagesAfterDomReplace(){
   }
   return false;
 }
-function _settleMessageScrollToBottom(force, explicit){
+function _settleMessageScrollToBottom(force, explicit, options){
   // `explicit` = a user-invoked scroll-to-bottom (End button / scrollToBottom()).
   // When explicit, late-layout settling runs even if Auto-follow is OFF — the
   // setting only suppresses AUTOMATIC streaming follow, not a deliberate jump
   // to the bottom. (Codex #4006 r3.)
+  // Markdown post-processing (Prism, tables, Mermaid/KaTeX/PDF placeholders)
   // can grow the transcript after the first scroll write. Re-apply the bottom
   // position when content settles so late layout does not leave the viewport
   // above the real end. User scroll increments _bottomSettleToken and cancels.
@@ -3192,13 +3244,16 @@ function _settleMessageScrollToBottom(force, explicit){
   // scrollTop once via rAF (batches multiple resize callbacks per frame into
   // a single write). After 300ms of no resize events, the observer disconnects.
   const token=++_bottomSettleToken;
+  const afterSmooth=!!(options&&options.afterSmooth);
   cancelAnimationFrame(_settleRAF);
   if(_settleRO){ _settleRO.disconnect(); _settleRO=null; }
   clearTimeout(_settleTimer);
   clearTimeout(_settleFinalTimer);
 
-  // Sync write anchors the viewport immediately.
-  _setMessageScrollToBottom();
+  // Sync write anchors the viewport immediately unless an explicit smooth jump
+  // already started. Skipping it for smooth preserves the animation while the
+  // observer/fallback below still handles late layout growth.
+  if(!afterSmooth) _setMessageScrollToBottom();
 
   if(force) return;
 
@@ -3278,13 +3333,10 @@ function scrollToBottom(){
   _clearNewMessageScrollCue();
   _scrollPinned=true;
   _messageUserUnpinned=false;
-  // Write scrollTop once synchronously to anchor the viewport, then let
-  // ResizeObserver settle handle any late layout growth (Prism, KaTeX,
-  // Mermaid, images).  Using force=false so the observer runs — force=true
-  // was skipping the observer and causing Firefox paint jumps when
-  // renderMessages({preserveScroll:true}) + scrollToBottom() fired back-to-back.
-  _setMessageScrollToBottom();
-  _settleMessageScrollToBottom(false, true);
+  // Start explicit bottom jumps with smooth scrolling where supported, then let
+  // ResizeObserver settle any late layout growth without smoothing streaming.
+  _setMessageScrollToBottom({smooth:true});
+  _settleMessageScrollToBottom(false, true, {afterSmooth:true});
   _syncScrollToBottomCue(false,{newMessage:false});
   if(typeof _updateSessionStartJumpButton==='function') _updateSessionStartJumpButton();
 }
@@ -5305,6 +5357,7 @@ function clearInflightState(sid){
 // any other innerHTML path in this file.
 let _todosLastRenderedHash=null;
 let _todosRenderRafId=0;
+let _todosCompletedIdsSeen=new Set();
 
 function _todosHash(items){
   if(!Array.isArray(items)) return '';
@@ -5328,17 +5381,53 @@ function _todosPanelIsActive(){
   return !!(panel&&panel.classList&&panel.classList.contains('active'));
 }
 
+function _todoIdentity(item){
+  if(!item||typeof item!=='object') return '';
+  return String(item.id||item.content||'').trim();
+}
+
+function _todoIsCompleted(item){
+  return !!(item&&item.status==='completed');
+}
+
+function _syncCompletedTodoSeenSet(todos){
+  _todosCompletedIdsSeen=new Set();
+  if(!Array.isArray(todos)) return;
+  todos.forEach(item=>{
+    const id=_todoIdentity(item);
+    if(id&&_todoIsCompleted(item)) _todosCompletedIdsSeen.add(id);
+  });
+}
+
+function _checkAndFireTodoHaptic(todos){
+  if(!Array.isArray(todos)) return;
+  let newlyCompleted=false;
+  todos.forEach(item=>{
+    const id=_todoIdentity(item);
+    if(!id) return;
+    if(_todoIsCompleted(item)){
+      if(!_todosCompletedIdsSeen.has(id)) newlyCompleted=true;
+      _todosCompletedIdsSeen.add(id);
+    }else{
+      _todosCompletedIdsSeen.delete(id);
+    }
+  });
+  if(newlyCompleted) _triggerHaptic(30);
+}
+
 function scheduleTodosRefresh(){
   // Idempotent: many `todo_state` events fire on each tool result, but
   // only the latest snapshot needs to paint.  RAF lets us coalesce
   // without timer drift.
   if(_todosRenderRafId) return;
   if(typeof requestAnimationFrame!=='function'){
+    _checkAndFireTodoHaptic(S.todos);
     if(typeof loadTodos==='function') loadTodos();
     return;
   }
   _todosRenderRafId=requestAnimationFrame(()=>{
     _todosRenderRafId=0;
+    _checkAndFireTodoHaptic(S.todos);
     if(!_todosPanelIsActive()) return;
     if(typeof loadTodos==='function') loadTodos();
   });
@@ -5427,6 +5516,7 @@ function _hydrateTodosFromSession(session){
     S.todos=[];
     S.todoStateMeta=null;
   }
+  _syncCompletedTodoSeenSet(S.todos);
   _resetTodosRenderCache();
 }
 

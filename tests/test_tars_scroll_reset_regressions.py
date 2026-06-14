@@ -55,10 +55,12 @@ def test_scroll_to_bottom_settles_across_late_markdown_layout_growth():
         "not the fixed #messages scroll container"
     )
     assert "2000" in settle, "a 2s fallback must cover fully-static content that never resizes"
-    # scrollToBottom uses force=false so the observer runs, and explicit=true so the
-    # settle still runs even when Auto-follow is off (explicit user jump). The
-    # automatic scrollIfPinned() path passes no explicit flag (stays auto-gated).
-    assert "_settleMessageScrollToBottom(false, true)" in scroll
+    assert "options&&options.afterSmooth" in settle
+    assert "if(!afterSmooth) _setMessageScrollToBottom();" in settle
+    # scrollToBottom uses force=false so the observer runs, explicit=true so the
+    # settle still runs when Auto-follow is off, and afterSmooth=true so the
+    # initial smooth jump is not overwritten by an immediate instant scroll.
+    assert "_settleMessageScrollToBottom(false, true, {afterSmooth:true})" in scroll
     assert "_settleMessageScrollToBottom(false)" in pinned
     assert "!_scrollPinned" in settle
     assert "const token=++_bottomSettleToken" in settle
@@ -68,13 +70,13 @@ def test_scroll_to_bottom_settles_across_late_markdown_layout_growth():
 def test_scroll_to_bottom_writes_scroll_position_immediately_before_delayed_settle():
     scroll = _function_body(UI_JS, "function scrollToBottom")
 
-    immediate_idx = scroll.index("_setMessageScrollToBottom();")
-    settle_idx = scroll.index("_settleMessageScrollToBottom(false, true)")
+    immediate_idx = scroll.index("_setMessageScrollToBottom({smooth:true});")
+    settle_idx = scroll.index("_settleMessageScrollToBottom(false, true, {afterSmooth:true})")
 
     assert immediate_idx < settle_idx, (
-        "scrollToBottom() must write scrollTop synchronously before scheduling the "
-        "ResizeObserver settle; otherwise a DOM-rebuild scroll event can cancel the "
-        "delayed settle and strand the viewport at the top"
+        "scrollToBottom() must start the explicit smooth bottom action before scheduling "
+        "the ResizeObserver settle; otherwise the settle can overwrite the animation or "
+        "a DOM rebuild can strand the viewport at the top"
     )
 
 
