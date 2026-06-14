@@ -45,8 +45,9 @@ def test_scroll_to_bottom_settles_across_late_markdown_layout_growth():
 
     assert "requestAnimationFrame" in settle
     assert "setTimeout" in settle
-    assert "const passes=[0,16,80,180]" in settle
-    assert "_settleMessageScrollToBottom(true)" in scroll
+    assert "[0,16,80,180]" in settle
+    assert "[360,420,520,700]" in settle
+    assert "_settleMessageScrollToBottom(true,{afterSmooth:true})" in scroll
     assert "_settleMessageScrollToBottom(false)" in pinned
     assert "!_scrollPinned" in settle
     assert "const token=++_bottomSettleToken" in settle
@@ -56,11 +57,11 @@ def test_scroll_to_bottom_settles_across_late_markdown_layout_growth():
 def test_scroll_to_bottom_writes_scroll_position_immediately_before_delayed_settle():
     scroll = _function_body(UI_JS, "function scrollToBottom")
 
-    immediate_idx = scroll.index("_setMessageScrollToBottom();")
-    settle_idx = scroll.index("_settleMessageScrollToBottom(true)")
+    immediate_idx = scroll.index("_setMessageScrollToBottom({smooth:true});")
+    settle_idx = scroll.index("_settleMessageScrollToBottom(true,{afterSmooth:true})")
 
     assert immediate_idx < settle_idx, (
-        "scrollToBottom() must write scrollTop synchronously before scheduling delayed settles; "
+        "scrollToBottom() must start the explicit bottom action before scheduling delayed settles; "
         "otherwise a DOM-rebuild scroll event can cancel the delayed passes and strand the viewport at the top"
     )
 
