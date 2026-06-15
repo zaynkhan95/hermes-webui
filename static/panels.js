@@ -1257,6 +1257,18 @@ let _editingCronId = null;
 function _kanbanColumnLabel(name){ return t('kanban_status_' + name) || name; }
 function _kanbanTaskTitle(task){ return task.title || task.summary || task.id || t('kanban_task'); }
 function _kanbanTaskBody(task){ return task.body || task.description || task.prompt || ''; }
+function _kanbanTaskPreview(task, maxChars){
+  const raw = _kanbanTaskBody(task);
+  if (!raw) return '';
+  const limit = Number(maxChars || 220);
+  const compact = String(raw)
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#>*_`\[\]()|~-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!compact) return '';
+  return compact.length > limit ? compact.slice(0, Math.max(0, limit - 1)).trimEnd() + '…' : compact;
+}
 function _kanbanTaskMeta(task){
   const bits = [];
   if (task.assignee) bits.push(task.assignee);
@@ -1664,12 +1676,12 @@ function _kanbanCard(task, status){
   const comments = Number(task.comment_count || 0);
   const age = _kanbanTaskAge(task);
   const stale = _kanbanCardStalenessClass(task);
-  const body = _kanbanTaskBody(task);
+  const body = _kanbanTaskPreview(task);
   const assignee = task.assignee ? `<span class="kanban-card-assignee">@${esc(task.assignee)}</span>` : `<span class="kanban-card-unassigned">${esc(t('kanban_unassigned'))}</span>`;
   return `<article class="kanban-card ${esc(stale)}" data-kanban-task-id="${esc(task.id)}" draggable="true" ondragstart="dragKanbanTask(event, '${esc(task.id)}')" ondragend="finishKanbanDrag(event)" onclick="return openKanbanCard(event, '${esc(task.id)}')" tabindex="0" role="button" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadKanbanTask('${esc(task.id)}')}">
     <div class="kanban-card-topline"><span class="kanban-card-id">${esc(task.id || '')}</span>${priority ? `<span class="kanban-badge priority">P${priority}</span>` : ''}${task.tenant ? `<span class="kanban-badge tenant">${esc(task.tenant)}</span>` : ''}</div>
     <div class="kanban-card-title">${esc(_kanbanTaskTitle(task))}</div>
-    ${body ? `<div class="kanban-card-body">${_kanbanRenderMarkdown(body)}</div>` : ''}
+    ${body ? `<div class="kanban-card-body">${esc(body)}</div>` : ''}
     <div class="kanban-card-meta">${assignee}${comments ? `<span class="kanban-card-metric">💬 ${comments}</span>` : ''}${linkTotal ? `<span class="kanban-card-metric">↔ ${linkTotal}</span>` : ''}${age ? `<span class="kanban-card-age">${esc(age)}</span>` : ''}</div>
     ${_kanbanCardQuickActions(task)}
   </article>`;
@@ -1746,7 +1758,11 @@ async function loadKanban(animate){
     } catch(_) {}
     _kanbanSetSelectOptions($('kanbanAssigneeFilter'), _kanbanBoard.assignees || (assignees && assignees.assignees) || (config && config.assignees), 'kanban_all_assignees');
     _kanbanSetSelectOptions($('kanbanTenantFilter'), _kanbanBoard.tenants, 'kanban_all_tenants');
-    await loadKanbanStats();
+    _kanbanStartPolling();
+    _kanbanRenderBoard();
+    // Stats are best-effort and can be slower on busy/multi-board installs.
+    // Render the board first so the Kanban panel is usable even if stats lag.
+    loadKanbanStats();
     // Note: PR #1828 (v0.51.20) moved the boards refresh to the start of
     // loadKanban() so the active board is resolved BEFORE board-scoped
     // requests fire. The previous tail-of-function refresh has been removed
@@ -1754,8 +1770,6 @@ async function loadKanban(animate){
     // refreshes (debounced at 250ms via _scheduleKanbanRefresh). The
     // 30-second poll started by _kanbanStartPolling() picks up any board
     // state changes that arrive after this render.
-    _kanbanStartPolling();
-    _kanbanRenderBoard();
   } catch(e) {
     const html = _kanbanUnavailableHtml(e);
     if (board) board.innerHTML = html;

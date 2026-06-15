@@ -751,6 +751,63 @@ def test_kanban_dragging_card_does_not_open_detail_on_drop_click():
         assert token in open_body
 
 
+def test_kanban_cards_render_lightweight_body_previews_not_full_markdown():
+    """Kanban board cards must stay cheap to render even when task bodies are long.
+
+    Full markdown rendering belongs in the task detail pane. Rendering every
+    card body as markdown made the board slow/time out after task migrations
+    copied long specs into card bodies.
+    """
+    assert "function _kanbanTaskPreview" in PANELS
+    assert "const body = _kanbanTaskPreview(task);" in PANELS
+
+    card_template = re.search(r"function _kanbanCard\([^)]*\)\{(.*?)\n\}", PANELS, re.DOTALL)
+    assert card_template, "_kanbanCard() not found"
+    card_body = card_template.group(1)
+    assert "_kanbanRenderMarkdown(body)" not in card_body
+    assert "${esc(body)}" in card_body
+
+    import json
+    import subprocess
+    script = """
+const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync('static/panels.js', 'utf8');
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>\\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\\"':'&quot;',"'":'&#39;'}[ch]));
+}
+const context = {
+  console,
+  setInterval(){ return 1; },
+  document: { querySelectorAll(){ return []; }, getElementById(){ return null; }, addEventListener(){} },
+  window: { addEventListener(){} },
+  t(key){
+    const map = {
+      kanban_task:'Task', kanban_unassigned:'Unassigned', kanban_card_complete:'Complete',
+      kanban_card_archive:'Archive'
+    };
+    return map[key] || key;
+  },
+  esc, $(){ return null; }, api(){}, showToast(){}, li(){ return ''; }, S: {}
+};
+vm.createContext(context);
+vm.runInContext(src, context);
+const longBody = '# Heading\\n' + 'word '.repeat(160) + '\\n```js\\nalert(1)\\n```';
+const html = vm.runInContext(`_kanbanCard({
+  id:'t_long', title:'Long task', status:'todo', assignee:'default', body:${JSON.stringify(longBody)}
+}, 'todo')`, context);
+console.log(JSON.stringify({html}));
+"""
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    html = json.loads(result.stdout)["html"]
+    assert "<h1>" not in html
+    assert "<pre" not in html
+    assert "alert(1)" not in html
+    assert "…" in html
+    assert len(html) < 2200
+
+
+
 def test_kanban_lifecycle_controls_do_not_offer_manual_running_start():
     assert "quickKanbanCardAction(event,'${id}','running')" not in PANELS
     assert "kanban_card_start" not in PANELS
