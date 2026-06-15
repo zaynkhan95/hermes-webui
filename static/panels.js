@@ -5050,6 +5050,40 @@ async function switchToWorkspace(path,name){
 let _profilesCache = null;
 let _profileSwitchGeneration = 0;
 
+function _activeConversationHasStarted(){
+  if(!S.session) return false;
+  const visibleMessages = Array.isArray(S.messages)
+    ? S.messages.filter(m=>m&&m.role&&m.role!=='tool').length
+    : 0;
+  return !!(
+    visibleMessages > 0 ||
+    Number(S.session.message_count||0) > 0 ||
+    S.session.active_stream_id ||
+    S.session.pending_user_message
+  );
+}
+
+function syncProfileLockState(){
+  const locked = _activeConversationHasStarted();
+  const label = locked
+    ? (t('profile_switch_started_blocked') || 'Start a new conversation before switching Hermes profiles.')
+    : (t('profile_switch_title') || 'Switch profile');
+  const chip = $('profileChip');
+  if(chip){
+    chip.disabled = locked;
+    chip.classList.toggle('locked', locked);
+    chip.setAttribute('aria-disabled', locked ? 'true' : 'false');
+    chip.title = label;
+  }
+  const select = $('sessionProfileFilter');
+  if(select){
+    select.disabled = false;
+    select.classList.remove('locked');
+    select.title = 'Filter conversations by profile';
+  }
+  if(locked) closeProfileDropdown();
+}
+
 async function _profileSwitchPanelLoad(){
   if (_currentPanel === 'skills') await loadSkills();
   if (_currentPanel === 'memory') await loadMemory();
@@ -5079,6 +5113,44 @@ function _refreshProfileSwitchBackground(gen){
     if (typeof _setHiddenTabs === 'function') _setHiddenTabs(hidden);
     if (typeof _applyTabVisibility === 'function') _applyTabVisibility(hidden);
   }).catch(function(){});
+}
+
+async function _resolveProfileSwitchWorkspace(data){
+  let workspace = data && data.default_workspace ? data.default_workspace : null;
+  try {
+    const wsData = await api('/api/workspaces');
+    const workspaces = Array.isArray(wsData && wsData.workspaces) ? wsData.workspaces : [];
+    _workspaceList = workspaces;
+    const first = workspaces.find(w => w && w.path);
+    workspace = (wsData && wsData.last) || (first && first.path) || workspace;
+  } catch (_) {}
+  return workspace || null;
+}
+
+async function restoreProfileContextForSession(session){
+  if(!session) return;
+  const target = String(session.profile || 'default').trim() || 'default';
+  const current = S.activeProfile || 'default';
+  const equivalent = typeof _sessionProfilesEquivalent === 'function'
+    ? _sessionProfilesEquivalent(target, current)
+    : target === current;
+  if(equivalent){
+    if(typeof syncProfileLockState === 'function') syncProfileLockState();
+    return;
+  }
+  const gen = ++_profileSwitchGeneration;
+  const data = await api('/api/profile/switch', { method: 'POST', body: JSON.stringify({ name: target }) });
+  if (gen !== _profileSwitchGeneration) return;
+  S.activeProfile = data.active || target;
+  S.activeProfileIsDefault = !!data.is_default;
+  _skillsData = null;
+  _workspaceList = null;
+  if (data.default_model) window._defaultModel = data.default_model;
+  if (data.default_model_provider) window._activeProvider = data.default_model_provider;
+  if (typeof applyBotName === 'function') applyBotName();
+  if (typeof resetSessionProfileFilterToAll === 'function') resetSessionProfileFilterToAll();
+  _refreshProfileSwitchBackground(gen);
+  if(typeof syncProfileLockState === 'function') syncProfileLockState();
 }
 
 async function loadProfilesPanel() {
@@ -5216,7 +5288,7 @@ function _setProfileHeaderButtons(mode, p, activeName){
   if (mode === 'read') {
     const isActive = p && p.name === activeName;
     const isDefault = !!(p && p.is_default);
-    if (isActive) hide(actBtn); else show(actBtn);
+    if (isActive || _activeConversationHasStarted()) hide(actBtn); else show(actBtn);
     if (isDefault) hide(delBtn); else show(delBtn);
     hide(cancelBtn); hide(saveBtn);
   } else if (mode === 'create') {
@@ -5303,6 +5375,11 @@ function renderProfileDropdown(data) {
 }
 
 function toggleProfileDropdown() {
+  if (_activeConversationHasStarted()) {
+    syncProfileLockState();
+    showToast(t('profile_switch_started_blocked') || 'Start a new conversation before switching Hermes profiles.');
+    return;
+  }
   const dd = $('profileDropdown');
   if (!dd) return;
   if (dd.classList.contains('open')) { closeProfileDropdown(); return; }
@@ -5903,9 +5980,13 @@ async function openSelectedTelegramTopic(){
 }
 
 async function switchToProfile(name) {
-  // Profile switches are per-client cookie/TLS scoped, so a running stream in
-  // the current session can safely continue while this tab moves to another
-  // profile. The in-flight session stays attached to its original profile.
+  // Profile switches are per-client cookie/TLS scoped, but once a conversation
+  // has started its profile is part of the run context. Require a fresh chat
+  // before changing that context.
+  if (_activeConversationHasStarted()) {
+    showToast(t('profile_switch_started_blocked') || 'Start a new conversation before switching Hermes profiles.');
+    return;
+  }
 
   // ── Loading indicator ───────────────────────────────────────────────────
   // Show spinner on the profile chip immediately so the user gets visual
@@ -5919,8 +6000,8 @@ async function switchToProfile(name) {
   if (_chipLabel) _chipLabel.textContent = name;
 
   // Determine whether the current session has any messages.
-  // A session with messages is "in progress" and belongs to the current profile —
-  // we must not retag it.  We'll start a fresh session for the new profile instead.
+  // The guard above should catch started chats before we begin switching; keep
+  // this local flag so empty-session retagging remains explicit below.
   const sessionInProgress = S.session && (
     (S.messages && S.messages.length > 0) ||
     S.session.active_stream_id ||
@@ -5947,6 +6028,7 @@ async function switchToProfile(name) {
     _workspaceList = null;
     if (data.default_model) window._defaultModel = data.default_model;
     if (data.default_model_provider) window._activeProvider = data.default_model_provider;
+    const profileWorkspace = await _resolveProfileSwitchWorkspace(data);
 
     // ── Apply model ────────────────────────────────────────────────────────
     if (data.default_model) {
@@ -5990,30 +6072,31 @@ async function switchToProfile(name) {
     }
 
     // ── Apply workspace ────────────────────────────────────────────────────
-    if (data.default_workspace) {
+    if (profileWorkspace) {
       // Always store the persistent profile default — used for blank-page display
       // and workspace auto-bind throughout the session lifecycle (#804, #823).
-      S._profileDefaultWorkspace = data.default_workspace;
+      S._profileDefaultWorkspace = profileWorkspace;
       // Also set the one-shot flag consumed by newSession() so the first new
       // session after a profile switch inherits this workspace (#424).
-      S._profileSwitchWorkspace = data.default_workspace;
+      S._profileSwitchWorkspace = profileWorkspace;
 
       if (S.session && !sessionInProgress) {
         // Empty session (no messages yet) — safe to update it in place
         try {
           await api('/api/session/update', { method: 'POST', body: JSON.stringify({
             session_id: S.session.session_id,
-            workspace: data.default_workspace,
+            workspace: profileWorkspace,
             model: S.session.model,
             model_provider: S.session.model_provider||null,
           })});
-          S.session.workspace = data.default_workspace;
+          S.session.workspace = profileWorkspace;
         } catch (_) {}
       }
     }
 
     // ── Session ────────────────────────────────────────────────────────────
-    _showAllProfiles = false;
+    if (typeof resetSessionProfileFilterToAll === 'function') resetSessionProfileFilterToAll();
+    else _showAllProfiles = true;
     if (typeof animateNextSessionListRefresh === 'function') animateNextSessionListRefresh();
 
     if (sessionInProgress) {

@@ -49,9 +49,9 @@ def test_seed_agents_are_exact_active_profiles(isolated_mission_control):
     assert len(agents) == 3
     assert agents[0]["telegramChatId"] == "-1003967646300"
     assert agents[0]["name"] == "Main"
-    assert agents[0]["telegramThreadId"] == "12"
+    assert agents[0]["telegramThreadId"] == "9"
     assert agents[1]["name"] == "FINx1 CPO"
-    assert agents[1]["telegramThreadId"] == "9"
+    assert agents[1]["telegramThreadId"] == "12"
 
 
 def test_patch_agent_persists_only_safe_fields(isolated_mission_control, tmp_path):

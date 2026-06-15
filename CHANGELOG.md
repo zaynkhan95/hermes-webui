@@ -5,7 +5,9 @@
 
 ### Added
 - **Mission Control Agents MVP** — added an Agents panel with seeded Hermes Agent profiles, Agent-scoped conversations, context-root knowledge editing, local mission records, safe Agent metadata settings, and a redacted Hermes status API.
+- **Kanban Loop skill installer** — added a profile-local `conversation-to-kanban-triage` skill template plus preview/install endpoints for a bounded Kanban/Todos workflow that keeps conversation-derived tasks in `triage`, requires human approval, and never auto-runs the dispatcher.
 - **Telegram topics view** — a new sidebar panel lists known active Telegram topic identities from Hermes Agent/Gateway state, lets each topic be assigned to a Hermes profile, and opens the related conversation through the existing session import path. Telegram-backed chats also show chat/thread context in the topbar badge.
+- **Chat profile context selector** — moved the conversation profile selector into the titlebar, defaults it to All profiles, and prevents switching Hermes profiles after a conversation has started.
 
 ### Changed
 - **Mission Control seed Agents now match the three active domain profiles** — `default`, `finx1`, and `health` replace the earlier topic-level seven-Agent seed list while keeping local overrides and missions under WebUI state.

@@ -1,0 +1,28 @@
+# Agent Instructions
+
+## Operating Mode
+- Treat this repository as production code.
+- Inspect before editing.
+- Keep changes focused on the requested task.
+- Prefer existing patterns, helpers, package managers, and test style.
+- Do not commit, push, rewrite history, delete data, or run destructive commands unless explicitly asked.
+
+## Implementation Standard
+- Make the smallest complete change that solves the task.
+- Preserve public behavior unless the task asks to change it.
+- Add or update tests when behavior changes.
+- Run the narrowest useful verification first, then broader checks when risk justifies it.
+- Call out any skipped verification and why.
+
+## Review Checklist
+- Correctness and edge cases
+- Type, lint, build, and test failures
+- Data migrations and backwards compatibility
+- Auth, permissions, secrets, and privacy
+- Concurrency, async behavior, caching, and retries
+- User-facing copy, accessibility, and responsive layout for frontend changes
+
+## Final Response
+- Summarize changed files and behavior.
+- Include verification commands and results.
+- Mention residual risks or follow-ups.

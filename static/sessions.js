@@ -818,6 +818,12 @@ async function loadSession(sid){
   // Stale response? A newer loadSession() call has already started (#1060).
   if (_loadingSessionId !== sid) return;
   S.session=data.session;
+  if(typeof restoreProfileContextForSession === 'function'){
+    try{
+      await restoreProfileContextForSession(S.session);
+      if (_loadingSessionId !== sid) return;
+    }catch(_e){}
+  }
   if(typeof _hydrateTodosFromSession==='function') _hydrateTodosFromSession(S.session);
   S.session._modelResolutionDeferred=true;
   S.lastUsage={...(data.session.last_usage||{})};
@@ -1134,6 +1140,249 @@ function _restoreSessionSourceFilter() {
     const raw = localStorage.getItem('hermes-session-source-filter');
     if (raw === 'cli' || raw === 'webui') _sessionSourceFilter = raw;
   } catch (_e) {}
+}
+
+function _normalizeSessionProfileName(name){
+  const value = (typeof name === 'string' && name.trim()) ? name.trim() : 'default';
+  return value || 'default';
+}
+
+function _sessionProfileFilterNeedsAllProfiles(value=_sessionProfileFilter){
+  return value !== SESSION_PROFILE_FILTER_ACTIVE;
+}
+
+function _syncShowAllProfilesFromSessionProfileFilter(){
+  _showAllProfiles = _sessionProfileFilterNeedsAllProfiles();
+}
+
+function _normalizeSessionProfileFilterValue(value){
+  const raw = (typeof value === 'string' && value.trim()) ? value.trim() : SESSION_PROFILE_FILTER_ACTIVE;
+  if(raw === SESSION_PROFILE_FILTER_ALL) return SESSION_PROFILE_FILTER_ALL;
+  if(raw.startsWith(SESSION_PROFILE_FILTER_PREFIX)){
+    const name = _normalizeSessionProfileName(raw.slice(SESSION_PROFILE_FILTER_PREFIX.length));
+    return SESSION_PROFILE_FILTER_PREFIX + name;
+  }
+  return SESSION_PROFILE_FILTER_ACTIVE;
+}
+
+function _sessionProfileFilterValueForName(name){
+  return SESSION_PROFILE_FILTER_PREFIX + _normalizeSessionProfileName(name);
+}
+
+function _sessionProfileFilterSelectedName(value=_sessionProfileFilter){
+  const normalized = _normalizeSessionProfileFilterValue(value);
+  return normalized.startsWith(SESSION_PROFILE_FILTER_PREFIX)
+    ? _normalizeSessionProfileName(normalized.slice(SESSION_PROFILE_FILTER_PREFIX.length))
+    : '';
+}
+
+function _sessionRootProfileNames(){
+  const names = new Set(['default']);
+  if(S.activeProfileIsDefault) names.add(_normalizeSessionProfileName(S.activeProfile));
+  for(const p of _sessionProfileOptions){
+    if(p && p.is_default) names.add(_normalizeSessionProfileName(p.name));
+  }
+  return names;
+}
+
+function _sessionProfilesEquivalent(a, b){
+  const left = _normalizeSessionProfileName(a);
+  const right = _normalizeSessionProfileName(b);
+  if(left === right) return true;
+  const roots = _sessionRootProfileNames();
+  return roots.has(left) && roots.has(right);
+}
+
+function _sessionMatchesSelectedProfile(session, value=_sessionProfileFilter){
+  const normalized = _normalizeSessionProfileFilterValue(value);
+  if(normalized === SESSION_PROFILE_FILTER_ALL) return true;
+  if(normalized === SESSION_PROFILE_FILTER_ACTIVE) return _sessionProfilesEquivalent(session && session.profile, S.activeProfile || 'default');
+  const selected = _sessionProfileFilterSelectedName(normalized);
+  return _sessionProfilesEquivalent(session && session.profile, selected);
+}
+
+function _persistSessionProfileFilter(){
+  try { localStorage.setItem(SESSION_PROFILE_FILTER_STORAGE_KEY, _sessionProfileFilter); } catch (_e) {}
+}
+
+function _restoreSessionProfileFilter(){
+  try {
+    const saved = localStorage.getItem(SESSION_PROFILE_FILTER_STORAGE_KEY);
+    _sessionProfileFilter = saved ? _normalizeSessionProfileFilterValue(saved) : SESSION_PROFILE_FILTER_ALL;
+  } catch (_e) {
+    _sessionProfileFilter = SESSION_PROFILE_FILTER_ALL;
+  }
+  _syncShowAllProfilesFromSessionProfileFilter();
+}
+
+function resetSessionProfileFilterToAll(){
+  _sessionProfileFilter = SESSION_PROFILE_FILTER_ALL;
+  _syncShowAllProfilesFromSessionProfileFilter();
+  _persistSessionProfileFilter();
+}
+
+function _scheduleSessionProfileFilterRelayout(){
+  if(typeof window === 'undefined' || !$('sessionProfileFilter')) return;
+  if(_sessionProfileFilterResizeRaf) cancelAnimationFrame(_sessionProfileFilterResizeRaf);
+  _sessionProfileFilterResizeRaf = requestAnimationFrame(()=>{
+    _sessionProfileFilterResizeRaf = 0;
+    renderSessionListFromCache();
+  });
+}
+
+async function _setSessionProfileFilter(value){
+  const next = _normalizeSessionProfileFilterValue(value);
+  if(_sessionProfileFilter === next) return;
+  const selectedName = _sessionProfileFilterSelectedName(next);
+  const hasStartedConversation = typeof _activeConversationHasStarted === 'function' && _activeConversationHasStarted();
+  const shouldSwitchProfile = !!(
+    selectedName &&
+    typeof switchToProfile === 'function' &&
+    !_sessionProfilesEquivalent(selectedName, S.activeProfile || 'default')
+  );
+  const profileSwitchAllowed = shouldSwitchProfile && !hasStartedConversation;
+  _sessionProfileFilter = next;
+  _syncShowAllProfilesFromSessionProfileFilter();
+  _activeProject = null;
+  _selectedSessions.clear();
+  _sessionSelectMode = false;
+  _persistSessionProfileFilter();
+  if(profileSwitchAllowed){
+    await switchToProfile(selectedName);
+    return;
+  }
+  renderSessionList();
+}
+
+function _sortSessionProfileOptions(options){
+  return [...options].sort((a,b)=>{
+    const aDefault = a && a.is_default;
+    const bDefault = b && b.is_default;
+    if(aDefault && !bDefault) return -1;
+    if(bDefault && !aDefault) return 1;
+    return _normalizeSessionProfileName(a && a.name).localeCompare(_normalizeSessionProfileName(b && b.name));
+  });
+}
+
+function _sessionProfileOptionsForRows(rows){
+  const byKey = new Map();
+  const addProfile = (name, isDefault=false) => {
+    const normalized = _normalizeSessionProfileName(name);
+    const rootish = Boolean(isDefault || normalized === 'default');
+    const key = rootish ? '__root__' : normalized;
+    const existing = byKey.get(key);
+    if(existing){
+      existing.is_default = existing.is_default || rootish;
+      if(existing.name === 'default' && normalized !== 'default') existing.name = normalized;
+      return;
+    }
+    byKey.set(key, {name: normalized, is_default: rootish});
+  };
+  addProfile(S.activeProfile || 'default', !!S.activeProfileIsDefault);
+  for(const p of _sessionProfileOptions){
+    if(p && p.name) addProfile(p.name, !!p.is_default);
+  }
+  for(const s of Array.isArray(rows) ? rows : []){
+    if(s && s.profile) addProfile(s.profile, false);
+  }
+  return _sortSessionProfileOptions(Array.from(byKey.values()));
+}
+
+function _ensureSessionProfileOptionsLoaded(){
+  if(_sessionProfilesLoadInFlight || _sessionProfileOptions.length) return;
+  _sessionProfilesLoadInFlight = api('/api/profiles').then(data=>{
+    const profiles = Array.isArray(data && data.profiles) ? data.profiles : [];
+    _sessionProfileOptions = profiles
+      .filter(p=>p && p.name)
+      .map(p=>({name:_normalizeSessionProfileName(p.name), is_default:!!p.is_default}));
+    renderSessionListFromCache();
+  }).catch(()=>{}).finally(()=>{
+    _sessionProfilesLoadInFlight = null;
+  });
+}
+
+function _profileFilterCountForOption(rows, value){
+  const normalized = _normalizeSessionProfileFilterValue(value);
+  if(normalized === SESSION_PROFILE_FILTER_ALL) return (Array.isArray(rows) ? rows : []).length;
+  if(normalized === SESSION_PROFILE_FILTER_ACTIVE && !_showAllProfiles) return (Array.isArray(rows) ? rows : []).length;
+  if(normalized === SESSION_PROFILE_FILTER_ACTIVE){
+    const activeName = _normalizeSessionProfileName(S.activeProfile);
+    return (Array.isArray(rows) ? rows : []).filter(s=>_sessionProfilesEquivalent(s && s.profile, activeName)).length;
+  }
+  return (Array.isArray(rows) ? rows : []).filter(s=>_sessionMatchesSelectedProfile(s, normalized)).length;
+}
+
+function _sessionProfileFilterTargetSlot(){
+  const titlebarSlot = $('titlebarProfileFilterSlot');
+  const sidebarSlot = $('sidebarProfileFilterSlot');
+  const isMobile = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
+  return isMobile && sidebarSlot ? sidebarSlot : titlebarSlot;
+}
+
+function _renderSessionProfileFilterControl(rows){
+  const titlebarSlot = $('titlebarProfileFilterSlot');
+  const sidebarSlot = $('sidebarProfileFilterSlot');
+  if(titlebarSlot) titlebarSlot.innerHTML = '';
+  if(sidebarSlot) sidebarSlot.innerHTML = '';
+  const slot = _sessionProfileFilterTargetSlot();
+  if(!slot) return;
+  _ensureSessionProfileOptionsLoaded();
+  const profileOptions = _sessionProfileOptionsForRows(rows);
+  const shouldShow = _showAllProfiles || _otherProfileCount > 0 || profileOptions.length > 1 || _sessionProfileFilter !== SESSION_PROFILE_FILTER_ACTIVE;
+  if(!shouldShow) return;
+
+  const bar = document.createElement('div');
+  bar.className = 'session-profile-filter-bar';
+
+  const label = document.createElement('label');
+  label.className = 'session-profile-filter-label';
+  label.htmlFor = 'sessionProfileFilter';
+  label.textContent = t('status_profile') || 'Profile';
+  bar.appendChild(label);
+
+  const select = document.createElement('select');
+  select.id = 'sessionProfileFilter';
+  select.className = 'session-profile-filter-select';
+  select.setAttribute('aria-label', 'Filter conversations by profile');
+
+  const activeName = _normalizeSessionProfileName(S.activeProfile);
+  const activeCount = _profileFilterCountForOption(rows, SESSION_PROFILE_FILTER_ACTIVE);
+  const activeOpt = document.createElement('option');
+  activeOpt.value = SESSION_PROFILE_FILTER_ACTIVE;
+  activeOpt.textContent = `Active: ${activeName}${activeCount ? ` (${activeCount})` : ''}`;
+  select.appendChild(activeOpt);
+
+  const allOpt = document.createElement('option');
+  allOpt.value = SESSION_PROFILE_FILTER_ALL;
+  const allCount = _profileFilterCountForOption(rows, SESSION_PROFILE_FILTER_ALL);
+  allOpt.textContent = _showAllProfiles
+    ? `All profiles (${allCount})`
+    : (_otherProfileCount > 0 ? `All profiles (+${_otherProfileCount})` : 'All profiles');
+  select.appendChild(allOpt);
+
+  for(const p of profileOptions){
+    const value = _sessionProfileFilterValueForName(p.name);
+    const opt = document.createElement('option');
+    opt.value = value;
+    const count = _showAllProfiles ? _profileFilterCountForOption(rows, value) : null;
+    opt.textContent = `${p.name}${p.is_default ? ` ${t('profile_default_label')}` : ''}${count !== null ? ` (${count})` : ''}`;
+    select.appendChild(opt);
+  }
+
+  if(_sessionProfileFilterSelectedName() && !Array.from(select.options).some(opt=>opt.value === _sessionProfileFilter)){
+    const selectedName = _sessionProfileFilterSelectedName();
+    const missing = document.createElement('option');
+    missing.value = _sessionProfileFilter;
+    missing.textContent = `${selectedName} (0)`;
+    select.appendChild(missing);
+  }
+
+  select.value = _sessionProfileFilter;
+  if(select.value !== _sessionProfileFilter) select.value = SESSION_PROFILE_FILTER_ACTIVE;
+  select.onchange = () => _setSessionProfileFilter(select.value);
+  bar.appendChild(select);
+  slot.appendChild(bar);
+  if(typeof syncProfileLockState === 'function') syncProfileLockState();
 }
 
 function _normalizeMessageForCliImportComparison(message) {
@@ -1906,10 +2155,20 @@ let _allProjects = [];  // cached project list
 // double-underscore prefixes provide.
 const NO_PROJECT_FILTER = '__none__';
 let _activeProject = null;  // project_id filter (null = show all, NO_PROJECT_FILTER = unassigned only)
-let _showAllProfiles = false;  // false = filter to active profile only
+const SESSION_PROFILE_FILTER_STORAGE_KEY = 'hermes-session-profile-filter';
+const SESSION_PROFILE_FILTER_ACTIVE = 'active';
+const SESSION_PROFILE_FILTER_ALL = 'all';
+const SESSION_PROFILE_FILTER_PREFIX = 'profile:';
+let _sessionProfileFilter = SESSION_PROFILE_FILTER_ALL;  // active, all, or profile:<name>
+let _showAllProfiles = true;  // false = server-scoped active profile only
 let _otherProfileCount = 0;       // count of sessions from other profiles (server-reported)
+let _sessionProfileOptions = [];
+let _sessionProfilesLoadInFlight = null;
+let _sessionProfileFilterResizeRaf = 0;
 let _sessionSourceFilter = 'webui';  // 'webui' keeps WebUI chats separate from read-only CLI sessions
 _restoreSessionSourceFilter();
+_restoreSessionProfileFilter();
+if(typeof window !== 'undefined') window.addEventListener('resize', _scheduleSessionProfileFilterRelayout);
 let _sessionActionMenu = null;
 let _sessionActionAnchor = null;
 let _sessionActionSessionId = null;
@@ -2808,7 +3067,7 @@ function _syncSessionAttentionSoundState(sessions){
 
 function _applySessionListPayload(sessData, projData){
   // Server's other_profile_count tells us how many sessions exist outside the
-  // active profile so the "Show N from other profiles" toggle can render
+  // active profile so the profile filter can advertise the aggregate option
   // without a second round-trip. Stashed on the module for renderSessionListFromCache.
   _otherProfileCount = sessData.other_profile_count || 0;
   // Capture server clock for clock-skew compensation (issue #1144).
@@ -2860,6 +3119,7 @@ async function _runRenderSessionListRefresh(opts, _gen){
   if(!deferWhileInteracting) _pendingSessionListPayload=null;
   try{
     if(!($('sessionSearch').value||'').trim()) _contentSearchResults = [];
+    _syncShowAllProfilesFromSessionProfileFilter();
     const allProfilesQS = _showAllProfiles ? '?all_profiles=1' : '';
     const [sessData, projData] = await Promise.all([
       api('/api/sessions' + allProfilesQS,{timeoutToast:false}),
@@ -4139,14 +4399,14 @@ function renderSessionListFromCache(){
   const sourceFiltered = _sessionSourceFilter==='cli'
     ? withMessages.filter(s=>_isCliSession(s))
     : withMessages.filter(s=>!_isCliSession(s));
-  // The server is authoritative for profile scoping (#1611): it filters by
-  // active profile when no query param is set, and returns the aggregate when
-  // we send ?all_profiles=1. The renamed-root cross-alias (a row tagged
-  // 'default' matching active 'kinni' when kinni.is_default) lives server-side
-  // in _profiles_match, and a strict-equality client filter would reject those
-  // rows incorrectly. So we trust the wire data and skip the redundant client
-  // filter entirely.
-  const profileFiltered=sourceFiltered.filter(s=>
+  // /api/sessions is server-scoped for the active profile (#1611), including the
+  // renamed-root alias rule. Search results can still inject rows outside the
+  // current list, so keep an alias-aware client guard here instead of a brittle
+  // strict-equality profile check.
+  const profileSelectionFiltered=_sessionProfileFilter===SESSION_PROFILE_FILTER_ALL
+    ?sourceFiltered
+    :sourceFiltered.filter(s=>_sessionMatchesSelectedProfile(s,_sessionProfileFilter));
+  const profileFiltered=profileSelectionFiltered.filter(s=>
     !s.default_hidden||(_activeProject&&_activeProject!==NO_PROJECT_FILTER&&s.project_id===_activeProject)
   );
   // Filter by active project. NO_PROJECT_FILTER sentinel asks for sessions
@@ -4205,6 +4465,7 @@ function renderSessionListFromCache(){
     }
     list.appendChild(sourceTabs);
   }
+  _renderSessionProfileFilterControl(sourceFiltered);
   // Project filter bar — show when there are real projects OR there are
   // unassigned sessions (so the Unassigned chip has something to filter to).
   const hasUnprojected=profileFiltered.some(s=>!s.project_id);
@@ -4258,25 +4519,6 @@ function renderSessionListFromCache(){
     addBtn.onclick=(e)=>{e.stopPropagation();_startProjectCreate(bar,addBtn);};
     bar.appendChild(addBtn);
     list.appendChild(bar);
-  }
-  // Profile filter toggle (show sessions from other profiles).
-  // Cross-profile rows live SERVER-SIDE behind ?all_profiles=1, so the toggle
-  // must trigger a refetch — there's no client-cached aggregate to slice through.
-  // The server is authoritative for the count (renamed-root cross-alias is
-  // server-side). A naive strict-equality client fallback would mis-count.
-  const otherProfileCount = _otherProfileCount;
-  if(otherProfileCount>0&&!_showAllProfiles){
-    const pfToggle=document.createElement('div');
-    pfToggle.style.cssText='font-size:10px;padding:4px 10px;color:var(--muted);cursor:pointer;text-align:center;opacity:.7;';
-    pfToggle.textContent='Show '+otherProfileCount+' from other profiles';
-    pfToggle.onclick=()=>{_showAllProfiles=true;renderSessionList();};
-    list.appendChild(pfToggle);
-  } else if(_showAllProfiles){
-    const pfToggle=document.createElement('div');
-    pfToggle.style.cssText='font-size:10px;padding:4px 10px;color:var(--muted);cursor:pointer;text-align:center;opacity:.7;';
-    pfToggle.textContent='Show active profile only';
-    pfToggle.onclick=()=>{_showAllProfiles=false;renderSessionList();};
-    list.appendChild(pfToggle);
   }
   // Show/hide archived toggle if there are archived sessions
   if(archivedCount>0){

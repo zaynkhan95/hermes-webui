@@ -270,6 +270,7 @@ If an AI assistant is helping with install, reinstall, bootstrap, provider setup
 - **Chat** -- session list, search, pin, archive, projects, new conversation
 - **Tasks** -- view, create, edit, run, pause/resume, delete cron jobs; run history; completion alerts
 - **Skills** -- list all skills by category, search, preview, create/edit/delete; linked files viewer
+- **Kanban Loop** -- install a profile-local `conversation-to-kanban-triage` skill for bounded conversation closeout, morning review, and evening sweep workflows
 - **Memory** -- view and edit MEMORY.md and USER.md inline
 - **Profiles** -- create, switch, delete agent profiles; clone config
 - **Todos** -- live task list from the current session
@@ -562,6 +563,7 @@ The WebUI is still coupled to Hermes Agent internals for runtime execution, prov
 
 **Using & customizing**
 - [`THEMES.md`](THEMES.md) — theme + skin system, custom theme guide
+- [`docs/kanban-loop.md`](docs/kanban-loop.md) — bounded Kanban/Todos/skills workflow for turning conversations into approved durable tasks
 - [`docs/workspace-git.md`](docs/workspace-git.md) — the workspace Git controls
 - [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md) — administrator-controlled WebUI extension injection
 

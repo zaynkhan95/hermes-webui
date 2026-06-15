@@ -1228,6 +1228,7 @@ const LOCALES = {
     profile_api_key_placeholder: 'API key (optional)',
     manage_profiles: 'Manage profiles',
     profiles_load_failed: 'Failed to load profiles',
+    profile_switch_started_blocked: 'Start a new conversation before switching Hermes profiles.',
     profile_switched_new_conversation: (name) => `Switched to profile: ${name} — new conversation started`,
     profile_switched: (name) => `Switched to profile: ${name}`,
     profile_name_rule: 'Lowercase letters, numbers, hyphens, underscores only',

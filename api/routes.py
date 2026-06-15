@@ -6172,6 +6172,13 @@ def handle_get(handler, parsed) -> bool:
             "unique_skills_used": unique,
         })
 
+    if parsed.path == "/api/kanban-loop/skill":
+        from api.kanban_loop_skill import metadata, skill_content
+
+        data = metadata()
+        data["content"] = skill_content()
+        return j(handler, data)
+
     if parsed.path == "/api/skills/content":
         qs = parse_qs(parsed.query)
         name = qs.get("name", [""])[0]
@@ -7670,6 +7677,9 @@ def handle_post(handler, parsed) -> bool:
 
     if parsed.path == "/api/skills/toggle":
         return _handle_skill_toggle(handler, body)
+
+    if parsed.path == "/api/kanban-loop/skill/install":
+        return _handle_kanban_loop_skill_install(handler, body)
 
     # ── Memory (POST) ──
     if parsed.path == "/api/memory/write":
@@ -14288,17 +14298,15 @@ def _handle_handoff_summary(handler, body):
         })
 
 
-def _handle_skill_save(handler, body):
-    try:
-        require(body, "name", "content")
-    except ValueError as e:
-        return bad(handler, str(e))
-    skill_name = body["name"].strip().lower().replace(" ", "-")
+def _write_skill_to_active_profile(name: str, content: str, category: str = "") -> dict:
+    """Write SKILL.md into the active profile's skills directory."""
+
+    skill_name = str(name).strip().lower().replace(" ", "-")
     if not skill_name or "/" in skill_name or ".." in skill_name:
-        return bad(handler, "Invalid skill name")
-    category = body.get("category", "").strip()
+        raise ValueError("Invalid skill name")
+    category = str(category or "").strip()
     if category and ("/" in category or ".." in category):
-        return bad(handler, "Invalid category")
+        raise ValueError("Invalid category")
     skills_dir = _active_skills_dir()
 
     if category:
@@ -14309,11 +14317,42 @@ def _handle_skill_save(handler, body):
     try:
         skill_dir.resolve().relative_to(skills_dir.resolve())
     except ValueError:
-        return bad(handler, "Invalid skill path")
+        raise ValueError("Invalid skill path")
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_file = skill_dir / "SKILL.md"
-    skill_file.write_text(body["content"], encoding="utf-8")
-    return j(handler, {"ok": True, "name": skill_name, "path": str(skill_file)})
+    skill_file.write_text(content, encoding="utf-8")
+    return {"ok": True, "name": skill_name, "path": str(skill_file), "category": category or None}
+
+
+def _handle_skill_save(handler, body):
+    try:
+        require(body, "name", "content")
+        result = _write_skill_to_active_profile(
+            body["name"],
+            body["content"],
+            body.get("category", ""),
+        )
+    except ValueError as e:
+        return bad(handler, str(e))
+    return j(handler, result)
+
+
+def _handle_kanban_loop_skill_install(handler, body):
+    from api.kanban_loop_skill import SKILL_CATEGORY, SKILL_NAME, metadata, skill_content
+
+    requested_name = str((body or {}).get("name") or SKILL_NAME).strip()
+    if requested_name != SKILL_NAME:
+        return bad(handler, "Invalid Kanban loop skill name", 400)
+    try:
+        result = _write_skill_to_active_profile(
+            SKILL_NAME,
+            skill_content(),
+            (body or {}).get("category") or SKILL_CATEGORY,
+        )
+    except ValueError as e:
+        return bad(handler, str(e))
+    result["skill"] = metadata()
+    return j(handler, result)
 
 
 def _handle_skill_delete(handler, body):

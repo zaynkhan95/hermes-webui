@@ -76,15 +76,15 @@ class TestProfileSwitchWorkspaceSetter:
 
     def test_panels_still_sets_profile_default_workspace(self):
         src = read('static/panels.js')
-        assert 'S._profileDefaultWorkspace = data.default_workspace' in src, (
+        assert 'S._profileDefaultWorkspace = profileWorkspace' in src, (
             "panels.js must still set S._profileDefaultWorkspace (persistent default) "
             "alongside S._profileSwitchWorkspace"
         )
 
     def test_both_set_together_in_same_block(self):
         src = read('static/panels.js')
-        default_pos = src.find('S._profileDefaultWorkspace = data.default_workspace')
-        switch_pos = src.find('S._profileSwitchWorkspace = data.default_workspace')
+        default_pos = src.find('S._profileDefaultWorkspace = profileWorkspace')
+        switch_pos = src.find('S._profileSwitchWorkspace = profileWorkspace')
         assert default_pos != -1, "S._profileDefaultWorkspace setter not found"
         assert switch_pos != -1, "S._profileSwitchWorkspace setter not found"
         # Both must be set within 200 chars of each other (same block)
@@ -92,6 +92,20 @@ class TestProfileSwitchWorkspaceSetter:
             "_profileDefaultWorkspace and _profileSwitchWorkspace must be set "
             "together in the same profile-switch workspace block"
         )
+
+    def test_profile_switch_resolves_workspace_from_workspace_api(self):
+        src = read('static/panels.js')
+        assert 'async function _resolveProfileSwitchWorkspace(data)' in src, (
+            "profile switches must resolve the target profile workspace through "
+            "/api/workspaces, not only trust the switch response fallback"
+        )
+        helper = src[src.find('async function _resolveProfileSwitchWorkspace(data)'):src.find('async function loadProfilesPanel')]
+        assert "api('/api/workspaces')" in helper
+        assert "wsData && wsData.last" in helper
+        assert "first && first.path" in helper
+        switch_fn = src[src.find('async function switchToProfile(name)'):src.find('function openProfileCreate')]
+        assert "const profileWorkspace = await _resolveProfileSwitchWorkspace(data);" in switch_fn
+        assert "workspace: profileWorkspace" in switch_fn
 
 
     def test_switch_to_workspace_clears_profile_switch_workspace(self):
